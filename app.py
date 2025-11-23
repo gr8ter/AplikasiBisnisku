@@ -31,24 +31,22 @@ if 'bahan_items' not in st.session_state:
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku' 
 
-# --- FUNGSI CSS PERBAIKAN EKSTREM V9.1 ---
+# --- FUNGSI CSS PERBAIKAN ULTRA-EKSTREM V9.2 ---
 def inject_custom_css():
     st.markdown("""
         <style>
-            /* 1. FIX TEKS GANDA/ARROW GANDA (EKSTREM) */
-            div[data-testid="stExpander"] button > div:first-child svg {
+            /* 1. FIX TEKS GANDA/ARROW GANDA (ULTRA-EKSTREM) */
+            
+            /* Target semua elemen teks yang bukan merupakan teks utama tombol (paling sering jadi duplikasi) */
+            div[data-testid="stExpander"] button > div:not(:last-child) > div > p,
+            div[data-testid="stExpander"] button > div:first-child > svg,
+            div[data-testid="stExpander"] > div > div > div > p {
                 display: none !important; 
+                visibility: hidden !important; 
             }
-            .stExpander > div > div > div > p {
-                display: none !important; 
-            }
-            div[data-testid="stExpander"] > div > div > div:first-child > div:nth-child(2) {
-                visibility: hidden !important;
-                height: 0 !important;
-                margin: 0 !important;
-                padding: 0 !important;
-            }
-            div[data-testid="stExpander"] button > div:nth-child(2) > p {
+            
+            /* Pastikan hanya teks judul tombol yang benar yang terlihat dan ter-style */
+            div[data-testid="stExpander"] button > div:last-child > p {
                 font-size: 1rem !important; 
                 font-weight: bold !important;
                 color: #5F3CD8 !important; 
@@ -95,16 +93,12 @@ def inject_custom_css():
                 border-top: 1px dashed #aaa;
                 border-bottom: 1px dashed #aaa;
             }
-            /* Style untuk laporan keuangan */
             .stMetric [data-testid="stMetricDelta"] {
-                color: #5F3CD8; /* Warna untuk delta positif/negatif */
+                color: #5F3CD8;
             }
         </style>
         """, 
         unsafe_allow_html=True)
-
-inject_custom_css()
-
 
 # --- FUNGSI KONEKSI GSPREAD & LOAD DATA ---
 @st.cache_resource
