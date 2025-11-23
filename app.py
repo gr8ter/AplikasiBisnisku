@@ -17,23 +17,29 @@ def get_gspread_client():
     """Menginisialisasi koneksi Gspread menggunakan st.secrets (Cloud) atau file lokal JSON."""
     credentials_data = None
     
-    # KITA HANYA FOKUS PADA MODE CLOUD (st.secrets) SAAT INI
+    # 1. Mode Cloud Deployment
     if 'gcp_service_account' in st.secrets:
-        # Ambil data dari st.secrets, yang sudah berupa dictionary (DICT)
+        # Ambil data dari st.secrets, yang sudah berupa dictionary
         credentials_data = st.secrets["gcp_service_account"]
+        
+        # --- PERBAIKAN KRUSIAL UNTUK CLOUD ---
+        # gspread.service_account_from_dict() membutuhkan private_key dengan karakter \n yang benar.
+        # Streamlit (TOML) kadang salah menginterpretasi, jadi kita perbaiki secara eksplisit.
+        if 'private_key' in credentials_data:
+            # Mengganti string literal '\n' menjadi karakter newline yang sesungguhnya
+            credentials_data['private_key'] = credentials_data['private_key'].replace('\\n', '\n')
+
+    # 2. Mode Local Testing (Biarkan saja, tapi fokus utamanya di atas)
     elif os.path.exists(SERVICE_ACCOUNT_FILE):
-        # Ini mode lokal, kita biarkan saja, tapi fokus utamanya di atas
         try:
             with open(SERVICE_ACCOUNT_FILE, 'r') as f:
                 credentials_data = json.load(f)
         except Exception:
-            # Handle error
             pass
     
     if credentials_data:
         try:
-            # BARIS KRUSIAL: Memastikan gspread membaca dari dictionary (DICT)
-            # yang sudah dimuat oleh Streamlit dari secrets.toml
+            # Baris ini sekarang seharusnya berfungsi karena private_key sudah diperbaiki
             gc = gspread.service_account_from_dict(credentials_data)
             return gc.open(SHEET_NAME)
         except Exception as e:
