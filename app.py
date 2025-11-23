@@ -25,20 +25,32 @@ if 'bahan_items' not in st.session_state:
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku' 
 
-# --- FUNGSI CSS PERBAIKAN ---
+# --- FUNGSI CSS PERBAIKAN (Lebih Agresif Menghilangkan Double Text/Arrow Bug) ---
 def inject_custom_css():
     st.markdown("""
         <style>
             /* 1. Fix Panah Ganda pada st.expander */
+            /* Menggunakan !important untuk memastikan ikon panah bawaan Streamlit disembunyikan */
             div[data-testid="stExpander"] button > div:first-child svg {
-                display: none; 
+                display: none !important; 
             }
+            
             /* 2. Fix Double Text/Bug Header */
+            /* Targetkan paragraf teks yang sering muncul ganda di dalam content block expander */
             .stExpander > div > div > div > p {
-                font-size: 1rem; 
-                font-weight: bold;
+                /* Perbaikan: Sembunyikan teks yang ganda */
+                display: none !important; 
             }
-            /* 3. Styling Lanjutan */
+            
+            /* 3. Styling Judul Expander Asli (Jika diperlukan styling khusus) */
+            /* Pastikan judul yang tersisa (yang menjadi tombol) tetap terlihat */
+            div[data-testid="stExpander"] button > div:nth-child(2) > p {
+                font-size: 1rem !important; 
+                font-weight: bold !important;
+                color: #5F3CD8 !important; /* Contoh: kembalikan warna judul */
+            }
+
+            /* 4. Styling Lanjutan (dari versi sebelumnya) */
             html, body, [class*="st-"] { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
             .stSidebar { background-color: #E0F2F1; }
             .stButton>button {
@@ -56,9 +68,6 @@ def inject_custom_css():
         </style>
         """, 
         unsafe_allow_html=True)
-
-inject_custom_css()
-
 
 # --- FUNGSI KONEKSI GSPREAD & LOAD DATA ---
 @st.cache_resource
