@@ -11,30 +11,36 @@ import sys
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku'
 
+# Fungsi untuk menginisialisasi koneksi Gspread
 @st.cache_resource
 def get_gspread_client():
-    """Menginisialisasi koneksi Gspread menggunakan st.secrets atau file lokal JSON."""
+    """Menginisialisasi koneksi Gspread menggunakan st.secrets (Cloud) atau file lokal JSON."""
     credentials_data = None
     
-    try:
-        if 'gcp_service_account' in st.secrets:
-            credentials_data = st.secrets["gcp_service_account"]
-        elif os.path.exists(SERVICE_ACCOUNT_FILE):
+    # KITA HANYA FOKUS PADA MODE CLOUD (st.secrets) SAAT INI
+    if 'gcp_service_account' in st.secrets:
+        # Ambil data dari st.secrets, yang sudah berupa dictionary (DICT)
+        credentials_data = st.secrets["gcp_service_account"]
+    elif os.path.exists(SERVICE_ACCOUNT_FILE):
+        # Ini mode lokal, kita biarkan saja, tapi fokus utamanya di atas
+        try:
             with open(SERVICE_ACCOUNT_FILE, 'r') as f:
                 credentials_data = json.load(f)
-        
-        if credentials_data:
+        except Exception:
+            # Handle error
+            pass
+    
+    if credentials_data:
+        try:
+            # BARIS KRUSIAL: Memastikan gspread membaca dari dictionary (DICT)
+            # yang sudah dimuat oleh Streamlit dari secrets.toml
             gc = gspread.service_account_from_dict(credentials_data)
             return gc.open(SHEET_NAME)
-        else:
-            st.error("Gagal menemukan kredensial. Pastikan secrets.json ada atau secrets.toml (di Cloud) sudah benar.")
+        except Exception as e:
+            st.error(f"Gagal saat menggunakan kredensial untuk koneksi gspread. Error: {e}")
             return None
-
-    except KeyError:
-        st.error("Kesalahan format kunci rahasia. Pastikan kunci 'gcp_service_account' ada.")
-        return None
-    except Exception as e:
-        st.error(f"Gagal menghubungkan atau membuka Google Sheets. Pastikan akun layanan sudah diberi akses Edit di Sheets Anda. Detail: {e}")
+    else:
+        st.error("Gagal menemukan kredensial. Pastikan secrets.toml sudah dikonfigurasi di Streamlit Cloud.")
         return None
 
 @st.cache_data(ttl=5) 
