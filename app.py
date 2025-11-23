@@ -8,16 +8,22 @@ import numpy as np
 from datetime import timedelta
 import time 
 
-# --- KONFIGURASI APLIKASI ---
+# --- KONFIGURASI APLIKASI & NAMA BISNIS ---
 st.set_page_config(
     page_title="Dashboard Bisnis GR8TER", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# Penyesuaian Nama Bisnis Sesuai Permintaan (Menggunakan \n untuk baris baru)
+NAMA_BISNIS_DOKTER = "PRAKTEK DOKTER UMUM\ndr. Putu Sannia Dewi, S.Ked"
+NAMA_BISNIS_WARKOP = "WARKOP ES PAK SORDEN"
+NAMA_BISNIS_BERAS = "TUJU-TUJU MART"
+
+
 # Inisialisasi Session State
 if 'resep_items' not in st.session_state:
-    st.session_state.resep_items = [{'obat': '', 'jumlah': 0, 'aturan': ''}] # ATURAN PAKAI SUDAH ADA LAGI
+    st.session_state.resep_items = [{'obat': '', 'jumlah': 0, 'aturan': ''}]
 if 'bahan_items' not in st.session_state:
     st.session_state.bahan_items = [{'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0}] 
 
@@ -25,32 +31,28 @@ if 'bahan_items' not in st.session_state:
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku' 
 
-# --- FUNGSI CSS PERBAIKAN (Lebih Agresif Menghilangkan Double Text/Arrow Bug) ---
+# --- FUNGSI CSS PERBAIKAN ---
 def inject_custom_css():
     st.markdown("""
         <style>
             /* 1. Fix Panah Ganda pada st.expander */
-            /* Menggunakan !important untuk memastikan ikon panah bawaan Streamlit disembunyikan */
             div[data-testid="stExpander"] button > div:first-child svg {
                 display: none !important; 
             }
             
             /* 2. Fix Double Text/Bug Header */
-            /* Targetkan paragraf teks yang sering muncul ganda di dalam content block expander */
             .stExpander > div > div > div > p {
-                /* Perbaikan: Sembunyikan teks yang ganda */
                 display: none !important; 
             }
             
-            /* 3. Styling Judul Expander Asli (Jika diperlukan styling khusus) */
-            /* Pastikan judul yang tersisa (yang menjadi tombol) tetap terlihat */
+            /* 3. Styling Judul Expander Asli */
             div[data-testid="stExpander"] button > div:nth-child(2) > p {
                 font-size: 1rem !important; 
                 font-weight: bold !important;
-                color: #5F3CD8 !important; /* Contoh: kembalikan warna judul */
+                color: #5F3CD8 !important; 
             }
 
-            /* 4. Styling Lanjutan (dari versi sebelumnya) */
+            /* 4. Styling Lanjutan */
             html, body, [class*="st-"] { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
             .stSidebar { background-color: #E0F2F1; }
             .stButton>button {
@@ -65,14 +67,42 @@ def inject_custom_css():
             .stTabs [data-baseweb="tab-list"] button {
                 border-radius: 8px 8px 0px 0px; font-weight: bold;
             }
+            
+            /* Style Khusus untuk Struk/Invoice */
+            .invoice-box {
+                max-width: 600px;
+                margin: auto;
+                padding: 10px;
+                border: 1px solid #eee;
+                box-shadow: 0 0 10px rgba(0, 0, 0, .15);
+                font-size: 12px;
+                line-height: 14px;
+                font-family: 'Helvetica Neue', 'Helvetica', Helvetica, Arial, sans-serif;
+                color: #555;
+            }
+            .invoice-box table {
+                width: 100%;
+                line-height: inherit;
+                text-align: left;
+            }
+            .invoice-box table td {
+                padding: 3px;
+                vertical-align: top;
+            }
+            .item-detail {
+                border-top: 1px dashed #aaa;
+                border-bottom: 1px dashed #aaa;
+            }
         </style>
         """, 
         unsafe_allow_html=True)
 
+inject_custom_css()
+
+
 # --- FUNGSI KONEKSI GSPREAD & LOAD DATA ---
 @st.cache_resource
 def get_gspread_client():
-    # ... (Koneksi Gspread tidak berubah)
     credentials_data = None
     if 'gcp_service_account' in st.secrets:
         original_data = st.secrets["gcp_service_account"]
@@ -110,18 +140,13 @@ def load_data(sheet_name):
 
             df = pd.DataFrame(data[1:], columns=data[0])
             
-            # --- PERBAIKAN: Sanitasi data dan konversi ke numerik/tanggal ---
             for col in df.columns:
                 if 'harga' in col.lower() or 'biaya' in col.lower() or 'stok' in col.lower() or 'jumlah' in col.lower():
-                    # Konversi kolom numerik, mengabaikan error
                     df[col] = pd.to_numeric(df[col].str.replace('.', '', regex=False).str.replace(',', '.', regex=False), errors='coerce')
                 
-                # Perbaikan error Tanggal_Kedaluwarsa
                 if 'tanggal' in col.lower() or 'kedaluwarsa' in col.lower():
-                    # Bersihkan spasi dan coba konversi ke tanggal. Baris yang gagal akan menjadi NaT (Not a Time)
                     df[col] = pd.to_datetime(df[col].str.strip(), errors='coerce')
             
-            # Hapus baris yang semua datanya NaN (biasanya baris kosong)
             df = df.dropna(how='all') 
             
             return df
@@ -155,6 +180,80 @@ def remove_bahan_item(index):
     if len(st.session_state.bahan_items) > 1:
         st.session_state.bahan_items.pop(index)
 
+# --- FUNGSI GENERATOR STRUK HTML BARU ---
+def generate_receipt_html(title, business_name, customer_info, items_list, total, needs_signature=False, no_faktur=None):
+    
+    # Konversi \n menjadi <br> untuk HTML
+    business_header = business_name.replace('\n', '<br>')
+    
+    # Header dan Info
+    html_content = f"""
+    <div class="invoice-box">
+        <table>
+            <tr>
+                <td colspan="2" style="text-align:center; font-weight: bold; font-size: 16px;">
+                    {business_header}
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2" style="text-align:center; font-size: 14px; border-bottom: 1px solid #ccc;">
+                    **{title}**
+                </td>
+            </tr>
+            <tr>
+                <td style="width: 50%;">
+                    **Tanggal:** {pd.to_datetime('today').strftime('%d %B %Y')}
+                </td>
+                <td style="width: 50%; text-align: right;">
+                    {customer_info}
+                    {f"<br>**Faktur/Resep No:** {no_faktur}" if no_faktur else ""}
+                </td>
+            </tr>
+        </table>
+        
+        <table class="item-detail" cellpadding="0" cellspacing="0" style="margin-top: 5px;">
+            <tr style="font-weight: bold; background-color: #f7f7f7;">
+                <td style="width: 40%;">Deskripsi</td>
+                <td style="width: 15%; text-align: center;">Qty</td>
+                <td style="width: 45%; text-align: right;">Harga / Keterangan</td>
+            </tr>
+    """
+    
+    # Detail Item
+    for item in items_list:
+        html_content += f"""
+            <tr>
+                <td>{item['deskripsi']}</td>
+                <td style="text-align: center;">{item['qty']}</td>
+                <td style="text-align: right;">{item['keterangan']}</td>
+            </tr>
+        """
+        
+    # Total
+    html_content += f"""
+        </table>
+        
+        <table>
+            <tr>
+                <td style="font-weight: bold; text-align: right;">TOTAL:</td>
+                <td style="font-weight: bold; text-align: right; width: 30%; border-top: 2px solid #555;">Rp {total:,.0f}</td>
+            </tr>
+    """
+
+    # Tanda Tangan/Tanda Terima
+    if needs_signature:
+        html_content += f"""
+            <tr><td colspan="2" style="text-align: center; padding-top: 20px;">
+                Tanda Terima<br><br><br>
+                (___________________)
+            </td></tr>
+        """
+    
+    html_content += "</table></div>"
+    
+    return html_content
+
+
 # --- PENGELOMPOKAN DATA BERDASARKAN BISNIS ---
 df_beras_master = load_data("beras_master") 
 df_beras_trx = load_data("beras_transaksi")
@@ -172,7 +271,7 @@ st.title("Dashboard Bisnis GR8TER")
 tab_beras, tab_dokter, tab_warkop = st.tabs([
     "🌾 Beras Tuju-Tuju Mart", 
     "🩺 Praktek Dokter", 
-    "☕ Warkop Pak Sorden"
+    "☕ Warkop Es Pak Sorden"
 ])
 
 
@@ -180,7 +279,7 @@ tab_beras, tab_dokter, tab_warkop = st.tabs([
 # 1. TAB BERAS TUJU-TUJU MART
 # ===============================================================
 with tab_beras:
-    st.header("Dashboard Beras Tuju-Tuju Mart")
+    st.header(f"Dashboard {NAMA_BISNIS_BERAS}")
     
     sub_tab_master, sub_tab_kasir = st.tabs(["Master Stok & Harga Beli", "Transaksi Kasir & Utang/Piutang"])
     
@@ -213,21 +312,39 @@ with tab_beras:
             
             col_type, col_amount, col_party = st.columns(3)
             with col_type:
-                st.selectbox(
+                tr_type_beras = st.selectbox(
                     "Jenis Transaksi", 
                     ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "Pembelian Utang (Kita Berutang)"],
                     key="tr_type_beras"
                 )
             with col_amount:
-                st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_beras")
+                tr_amount_beras = st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_beras")
             with col_party:
-                st.text_input("**Pihak Terkait** (Nama Pelanggan/Supplier)", key="tr_party_beras")
+                tr_party_beras = st.text_input("**Pihak Terkait** (Nama Pelanggan/Supplier)", key="tr_party_beras")
             
-            st.text_area("Catatan Transaksi", max_chars=200, key="catatan_beras")
+            tr_catatan_beras = st.text_area("Catatan Transaksi", max_chars=200, key="catatan_beras")
             
             if st.button("Simpan Transaksi Kasir", key="btn_save_transaksi_beras"):
-                st.success(f"Transaksi {st.session_state.tr_type_beras} sebesar Rp {st.session_state.tr_amount_beras:,.0f} tersimpan.")
+                st.success(f"Transaksi {tr_type_beras} sebesar Rp {tr_amount_beras:,.0f} tersimpan.")
                 st.cache_data.clear() 
+                
+                # --- LOGIKA CETAK INVOICE BERAS ---
+                if tr_type_beras == "Penjualan Tunai":
+                    items = [{'deskripsi': "Transaksi Penjualan Beras", 'qty': 1, 'keterangan': tr_catatan_beras if tr_catatan_beras else '-'}]
+                    
+                    receipt_html = generate_receipt_html(
+                        title="Tanda Terima Penjualan",
+                        business_name=NAMA_BISNIS_BERAS,
+                        customer_info=f"**Pelanggan:** {tr_party_beras if tr_party_beras else 'Umum'}",
+                        items_list=items,
+                        total=tr_amount_beras,
+                        needs_signature=True # Perlu Tanda Terima
+                    )
+                    
+                    st.markdown("### Struk Siap Cetak")
+                    st.markdown(receipt_html, unsafe_allow_html=True)
+                    st.button("🖼️ Cetak Struk/Tanda Terima", help="Klik untuk membuka dialog cetak browser", key="print_beras_btn")
+                # --- END LOGIKA CETAK BERAS ---
 
         st.subheader("Data Transaksi Terbaru Beras Tuju-Tuju Mart")
         if df_beras_trx is not None:
@@ -240,7 +357,7 @@ with tab_beras:
 # 2. TAB PRAKTEK DOKTER
 # ===============================================================
 with tab_dokter:
-    st.header("Dashboard Praktek Dokter")
+    st.header(f"Dashboard {NAMA_BISNIS_DOKTER.replace(r'\n', ' ')}") # Header tanpa \n
 
     sub_tab_master, sub_tab_resep, sub_tab_faktur = st.tabs([
         "Master Obat & Stok", 
@@ -301,17 +418,15 @@ with tab_dokter:
         st.markdown("### Pencatatan Resep Obat Keluar & Kasir Apotek")
 
         with st.expander("➕ Input Resep Obat Keluar (Pengurangan Stok Otomatis)"):
-            st.text_input("Nama Pasien", key="pasien_resep")
+            pasien_resep = st.text_input("Nama Pasien", key="pasien_resep")
             total_resep = 0
             
-            # Label Header untuk kolom dinamis
             st.markdown("""
             | Nama Obat | Jumlah Biji | **Aturan Pakai** | Aksi |
             | :--- | :--- | :--- | :--- |
             """)
             
             for i, item in enumerate(st.session_state.resep_items):
-                # Ubah rasio kolom untuk mengakomodasi ATURAN PAKAI
                 cols = st.columns([3, 1, 3, 1])
                 
                 with cols[0]:
@@ -319,7 +434,6 @@ with tab_dokter:
                 with cols[1]:
                     item['jumlah'] = st.number_input("Jumlah Biji", min_value=0, step=1, value=item['jumlah'], label_visibility="collapsed", key=f"jumlah_{i}")
                 with cols[2]:
-                    # ATURAN PAKAI DIKEMBALIKAN DI SINI
                     item['aturan'] = st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
                 with cols[3]:
                     st.markdown("<br>", unsafe_allow_html=True)
@@ -337,11 +451,32 @@ with tab_dokter:
                 st.metric("Total Perkiraan Biaya Resep (Simulasi)", f"Rp {total_resep:,.0f}")
                 
             if st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep"):
-                st.success(f"Resep untuk {st.session_state.pasien_resep} tersimpan & **Stok berhasil dikurangi**.")
+                st.success(f"Resep untuk {pasien_resep} tersimpan & **Stok berhasil dikurangi**.")
                 st.info("Invoice sedang dibuat...")
                 time.sleep(1)
-                st.success("Invoice siap dicetak/diunduh!")
-                st.cache_data.clear()
+                
+                # --- LOGIKA CETAK STRUK RESEP ---
+                items_resep = []
+                for item in st.session_state.resep_items:
+                    items_resep.append({
+                        'deskripsi': item['obat'], 
+                        'qty': item['jumlah'], 
+                        'keterangan': item['aturan']
+                    })
+                
+                receipt_html = generate_receipt_html(
+                    title="STRUK RESEP OBAT",
+                    business_name=NAMA_BISNIS_DOKTER,
+                    customer_info=f"**Pasien:** {pasien_resep}",
+                    items_list=items_resep,
+                    total=total_resep,
+                    needs_signature=False # TIDAK PERLU Tanda Tangan
+                )
+                
+                st.markdown("### Struk Resep Siap Cetak")
+                st.markdown(receipt_html, unsafe_allow_html=True)
+                st.button("🖼️ Cetak Struk Resep", help="Klik untuk membuka dialog cetak browser", key="print_resep_btn")
+                # --- END LOGIKA CETAK RESEP ---
 
         st.subheader("Data Resep Keluar Terbaru")
         if df_resep_keluar is not None:
@@ -349,23 +484,42 @@ with tab_dokter:
         else:
             st.warning("Data Resep Keluar tidak dapat dimuat.")
 
-    # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT (TIDAK BERUBAH) ---
+    # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT (Penambahan Stok Otomatis) ---
     with sub_tab_faktur:
         st.markdown("### Pencatatan Faktur Pembelian Obat (Penambahan Stok Otomatis)")
+
         with st.expander("➕ Input Faktur Pembelian Obat Baru"):
             col_faktur, col_supplier = st.columns(2)
             with col_faktur:
-                st.text_input("Nomor Faktur", key="no_faktur")
+                no_faktur = st.text_input("Nomor Faktur", key="no_faktur")
             with col_supplier:
-                st.text_input("Nama Supplier", key="nama_supplier")
+                nama_supplier = st.text_input("Nama Supplier", key="nama_supplier")
                 
-            st.date_input("Tanggal Pembelian", key="tgl_beli")
-            st.number_input("Total Biaya Faktur (Rp)", min_value=0, step=1000, key="total_faktur")
-            st.text_area("Detail Item yang Dibeli", help="Contoh: Amoxilin 5 Box, Exp 2026-10-01", key="detail_faktur")
+            tgl_beli = st.date_input("Tanggal Pembelian", key="tgl_beli")
+            total_faktur = st.number_input("Total Biaya Faktur (Rp)", min_value=0, step=1000, key="total_faktur")
+            detail_faktur = st.text_area("Detail Item yang Dibeli", help="Contoh: Amoxilin 5 Box, Exp 2026-10-01", key="detail_faktur")
             
             if st.button("Simpan Faktur & Tambahkan Stok", key="btn_save_faktur"):
-                st.success(f"Faktur No. {st.session_state.no_faktur} dari {st.session_state.nama_supplier} tersimpan & **Stok berhasil ditambahkan**.")
+                st.success(f"Faktur No. {no_faktur} dari {nama_supplier} tersimpan & **Stok berhasil ditambahkan**.")
                 st.cache_data.clear() 
+                
+                # --- LOGIKA CETAK FAKTUR ---
+                items_faktur = [{'deskripsi': detail_faktur, 'qty': 1, 'keterangan': "Pembelian Grosir"}]
+                
+                receipt_html = generate_receipt_html(
+                    title="FAKTUR PEMBELIAN OBAT",
+                    business_name=NAMA_BISNIS_DOKTER,
+                    customer_info=f"**Supplier:** {nama_supplier}",
+                    items_list=items_faktur,
+                    total=total_faktur,
+                    needs_signature=True, # PERLU Tanda Terima
+                    no_faktur=no_faktur
+                )
+                
+                st.markdown("### Faktur Siap Cetak")
+                st.markdown(receipt_html, unsafe_allow_html=True)
+                st.button("🖼️ Cetak Faktur Pembelian", help="Klik untuk membuka dialog cetak browser", key="print_faktur_btn")
+                # --- END LOGIKA CETAK FAKTUR ---
 
         st.subheader("Data Faktur Pembelian Obat Terbaru")
         if df_faktur_obat is not None:
@@ -378,7 +532,7 @@ with tab_dokter:
 # 3. TAB WARKOP PAK SORDEN
 # ===============================================================
 with tab_warkop:
-    st.header("Dashboard Warkop Pak Sorden")
+    st.header(f"Dashboard {NAMA_BISNIS_WARKOP}")
     
     sub_tab_dash, sub_tab_cost_estimator = st.tabs(["Transaksi Kasir (Utang/Piutang)", "Kalkulator Biaya Menu"])
     
@@ -387,20 +541,20 @@ with tab_warkop:
         with st.expander("💸 Input Transaksi Penjualan Warkop"):
             col_type, col_amount, col_party = st.columns(3)
             with col_type:
-                st.selectbox(
+                tr_type_warkop = st.selectbox(
                     "Jenis Transaksi", 
                     ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "Pembelian Utang (Kita Berutang)"],
                     key="tr_type_warkop"
                 )
             with col_amount:
-                st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_warkop")
+                tr_amount_warkop = st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_warkop")
             with col_party:
-                st.text_input("Pihak Terkait (Nama Pelanggan/Supplier)", key="tr_party_warkop")
+                tr_party_warkop = st.text_input("Pihak Terkait (Nama Pelanggan/Supplier)", key="tr_party_warkop")
             
             st.text_area("Catatan Transaksi", max_chars=200, key="catatan_warkop")
             
             if st.button("Simpan Transaksi", key="btn_save_transaksi_warkop"):
-                st.success(f"Transaksi {st.session_state.tr_type_warkop} sebesar Rp {st.session_state.tr_amount_warkop:,.0f} tersimpan.")
+                st.success(f"Transaksi {tr_type_warkop} sebesar Rp {tr_amount_warkop:,.0f} tersimpan.")
                 st.cache_data.clear() 
 
         st.markdown("---")
