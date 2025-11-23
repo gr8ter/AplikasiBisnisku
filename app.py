@@ -32,30 +32,37 @@ SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json'
 SHEET_NAME = 'Database Bisnisku' 
 
 # --- FUNGSI CSS PERBAIKAN EKSTREM ---
+# --- FUNGSI CSS PERBAIKAN EKSTREM V9.1 ---
 def inject_custom_css():
     st.markdown("""
         <style>
             /* 1. FIX TEKS GANDA/ARROW GANDA (EKSTREM) */
-            /* Menyembunyikan elemen duplikasi teks dan ikon di Expander */
             
-            /* Target elemen ikon panah */
+            /* Sembunyikan ikon panah bawaan Streamlit (ikon keyboard_arrow_right) */
             div[data-testid="stExpander"] button > div:first-child svg {
                 display: none !important; 
             }
             
-            /* Target teks judul yang berada di dalam konten block expander (sering jadi duplikasi) */
+            /* Sembunyikan teks duplikasi yang berada di dalam konten block expander (sering jadi duplikasi 1) */
             .stExpander > div > div > div > p {
                 display: none !important; 
             }
             
-            /* Target teks judul yang muncul di baris bawah tombol (sering jadi duplikasi kedua) */
+            /* Sembunyikan elemen yang membawa teks duplikasi kedua, yang sering di-inject Streamlit */
+            div[data-testid="stExpander"] > div > div > div:first-child > div:nth-child(2) {
+                visibility: hidden !important;
+                height: 0 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+
+            /* Pastikan teks judul yang benar (yang menjadi tombol) tetap terlihat dan ter-style */
             div[data-testid="stExpander"] button > div:nth-child(2) > p {
                 font-size: 1rem !important; 
                 font-weight: bold !important;
                 color: #5F3CD8 !important; 
-                /* Kita biarkan ini, ini adalah judul yang benar */
             }
-
+            
             /* 2. Styling Lanjutan */
             html, body, [class*="st-"] { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
             .stSidebar { background-color: #E0F2F1; }
@@ -100,9 +107,6 @@ def inject_custom_css():
         </style>
         """, 
         unsafe_allow_html=True)
-
-inject_custom_css()
-
 
 # --- FUNGSI KONEKSI GSPREAD & LOAD DATA ---
 @st.cache_resource
