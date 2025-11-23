@@ -6,6 +6,7 @@ import os
 from oauth2client.service_account import ServiceAccountCredentials
 import numpy as np 
 from datetime import timedelta
+import time # Diperlukan untuk simulasi print
 
 # --- KONFIGURASI APLIKASI ---
 st.set_page_config(
@@ -43,7 +44,7 @@ def inject_custom_css():
                 background-color: #5F3CD8; 
             }
             /* 4. Input Styling (Rounded) */
-            .stTextInput>div>div>input, .stNumberInput>div>div>input {
+            .stTextInput>div>div>input, .stNumberInput>div>div>input, .stSelectbox>div>div {
                 border-radius: 8px;
                 border: 1px solid #7350F2; 
                 padding: 8px;
@@ -57,15 +58,19 @@ def inject_custom_css():
                 border-radius: 8px 8px 0px 0px;
                 font-weight: bold;
             }
+            /* 7. Fix Expander Header Double Text */
+            .stExpander > div > div > div > p {
+                font-size: 1rem; /* Adjust font size for clean look */
+                font-weight: bold;
+            }
         </style>
         """, 
         unsafe_allow_html=True)
 
-# Panggil fungsi CSS di awal
 inject_custom_css()
 
 
-# --- FUNGSI KONEKSI GSPREAD (SUDAH DIPERBAIKI) ---
+# --- FUNGSI KONEKSI GSPREAD ---
 @st.cache_resource
 def get_gspread_client():
     """Menginisialisasi koneksi Gspread yang stabil menggunakan oauth2client."""
@@ -117,22 +122,23 @@ def load_data(sheet_name):
             return None
     return None
 
-# --- FUNGSI BEP CALCULATION ---
-def calculate_bep(fixed_cost, unit_cost, selling_price):
-    if selling_price <= unit_cost:
-        return "Harga Jual harus lebih besar dari Biaya Variabel per Unit!", 0, 0
-    contribution_margin_per_unit = selling_price - unit_cost
-    bep_unit = fixed_cost / contribution_margin_per_unit
-    bep_revenue = bep_unit * selling_price
-    return "BEP Berhasil Dihitung", bep_unit, bep_revenue
+# --- FUNGSI COST ESTIMATOR (Ganti BEP) ---
+def calculate_menu_cost(base_cost, packaging_cost, labor_cost, misc_cost):
+    total_unit_cost = base_cost + packaging_cost + labor_cost + misc_cost
+    
+    # Perkiraan Harga Jual (Markup 50%)
+    suggested_selling_price = total_unit_cost * 1.5 
+    
+    return total_unit_cost, suggested_selling_price
 
 
 # --- PENGELOMPOKAN DATA BERDASARKAN BISNIS (ASUMSI NAMA SHEET) ---
-# PASTIKAN NAMA SHEET INI SESUAI DENGAN GOOGLE SHEETS ANDA
 df_beras_master = load_data("beras_master") 
 df_beras_trx = load_data("beras_transaksi")
-df_obat = load_data("master_obat") 
-df_warkop_trx = load_data("warkop_transaksi") 
+df_obat_master = load_data("master_obat") 
+df_resep_keluar = load_data("resep_keluar") # SHEET BARU: Resep Keluar Dokter
+df_faktur_obat = load_data("faktur_obat") # SHEET BARU: Faktur Pembelian Obat
+df_warkop_trx = load_data("warkop_transaksi")
 
 
 # --- LOGIKA TAMPILAN UTAMA ---
@@ -153,24 +159,19 @@ tab_beras, tab_dokter, tab_warkop = st.tabs([
 with tab_beras:
     st.header("Dashboard Beras Tuju-Tuju Mart")
     
-    # Membuat SUB-TAB KHUSUS di dalam Tab Beras
     sub_tab_master, sub_tab_kasir = st.tabs(["Master Stok & Harga Beli", "Transaksi Kasir & Utang/Piutang"])
     
     with sub_tab_master:
-        st.subheader("Pencatatan Master Stok & Harga Beli")
+        st.markdown("### Master Stok Beras")
         
         # --- FORM INPUT MASTER BERAS ---
         with st.expander("➕ Input Stok/Master Beras Baru"):
-            st.subheader("Input Data Master")
-            
             col_name, col_buy, col_sell, col_stock = st.columns(4)
             with col_name:
                 nama_beras = st.text_input("Nama/Jenis Beras", key="nama_beras_master")
             with col_buy:
-                # 1. Harga Beli untuk Master
                 harga_beli = st.number_input("**Harga Beli (per kg/unit)**", min_value=0, step=1000, key="hb_beras")
             with col_sell:
-                 # 2. Harga Jual untuk Master
                 harga_jual = st.number_input("**Harga Jual (per kg/unit)**", min_value=0, step=1000, key="hj_beras_master")
             with col_stock:
                 stok = st.number_input("Stok Awal (kg)", min_value=0, step=1, key="stok_beras_master")
@@ -186,17 +187,17 @@ with tab_beras:
             st.warning("Data Master Beras Tuju-Tuju Mart tidak dapat dimuat.")
 
     with sub_tab_kasir:
-        st.subheader("Pencatatan Transaksi Kasir & Utang/Piutang")
+        st.markdown("### Transaksi Kasir dan Laporan Utang/Piutang")
         
         # --- FORM KASIR BERAS (Utang/Piutang) ---
         with st.expander("💸 Input Transaksi Penjualan/Pembelian Beras"):
             
             col_type, col_amount, col_party = st.columns(3)
             with col_type:
-                # Pilihan Utang/Piutang/Tunai
+                # Opsi Utang/Piutang
                 jenis_transaksi = st.selectbox(
                     "Jenis Transaksi", 
-                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "**Pembelian Utang (Kita Berutang ke Supplier)**"],
+                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "Pembelian Utang (Kita Berutang)"],
                     key="tr_type_beras"
                 )
             with col_amount:
@@ -218,67 +219,129 @@ with tab_beras:
 
 
 # ===============================================================
-# 2. TAB PRAKTEK DOKTER (Master Obat Lengkap)
+# 2. TAB PRAKTEK DOKTER (Master + Resep + Faktur)
 # ===============================================================
 with tab_dokter:
     st.header("Dashboard Praktek Dokter")
-    
-    # --- FORM INPUT MASTER OBAT BARU ---
-    with st.expander("➕ Input Master Obat Baru (Lengkap)"):
-        st.subheader("Pencatatan Master Obat")
-        
-        col_name, col_price, col_unit = st.columns(3)
-        with col_name:
-            nama_obat = st.text_input("Nama Obat", key="nama_obat")
-        with col_price:
-            harga_per_biji = st.number_input("**Harga Jual (per biji)**", min_value=0, step=100, key="hj_obat")
-        with col_unit:
-            st.selectbox("**Satuan**", ["Box", "Strip", "Biji", "Botol"], key="satuan_obat")
-            
-        expired_date = st.date_input("Tanggal Kedaluwarsa (Expired Date)", key="ed_obat")
-        
-        if st.button("Simpan Master Obat", key="btn_save_master_obat"):
-            st.success(f"Master {nama_obat} tersimpan.")
-            st.cache_data.clear() 
 
-    # --- DATA & WARNING EXPIRED DATE ---
-    if df_obat is not None:
-        st.subheader("Data Stok Obat & Peringatan Kedaluwarsa")
+    sub_tab_master, sub_tab_resep, sub_tab_faktur = st.tabs([
+        "Master Obat & Stok", 
+        "Resep Keluar (Kasir Apotek)", 
+        "Pemesanan (Faktur Pembelian)"
+    ])
+    
+    # --- SUB-TAB 1: MASTER OBAT ---
+    with sub_tab_master:
+        st.markdown("### Master Stok Obat & Peringatan Kedaluwarsa")
         
-        today = pd.to_datetime('today').normalize()
-        three_months_ahead = today + timedelta(days=90) 
-        
-        if 'Tanggal_Kedaluwarsa' in df_obat.columns:
-            df_obat['Tanggal_Kedaluwarsa'] = pd.to_datetime(df_obat['Tanggal_Kedaluwarsa'], errors='coerce')
+        with st.expander("➕ Input Master Obat Baru"):
+            col_name, col_price, col_unit = st.columns(3)
+            with col_name:
+                nama_obat = st.text_input("Nama Obat", key="nama_obat")
+            with col_price:
+                harga_per_biji = st.number_input("**Harga Jual (per biji)**", min_value=0, step=100, key="hj_obat")
+            with col_unit:
+                st.selectbox("**Satuan**", ["Box", "Strip", "Biji", "Botol"], key="satuan_obat")
+                
+            expired_date = st.date_input("Tanggal Kedaluwarsa (Expired Date)", key="ed_obat")
             
-            expired_soon = df_obat[
-                (df_obat['Tanggal_Kedaluwarsa'].dt.normalize() >= today) & 
-                (df_obat['Tanggal_Kedaluwarsa'].dt.normalize() <= three_months_ahead)
-            ].sort_values('Tanggal_Kedaluwarsa')
+            if st.button("Simpan Master Obat", key="btn_save_master_obat"):
+                st.success(f"Master {nama_obat} tersimpan.")
+                st.cache_data.clear() 
+
+        # --- DATA & WARNING EXPIRED DATE ---
+        if df_obat_master is not None:
+            st.subheader("Peringatan Kedaluwarsa Obat")
+            today = pd.to_datetime('today').normalize()
+            three_months_ahead = today + timedelta(days=90) 
             
-            if not expired_soon.empty:
-                st.error(f"🚨 **PERINGATAN!** Ada {len(expired_soon)} item akan Kedaluwarsa dalam 3 Bulan:")
-                st.dataframe(expired_soon[['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan', 'Harga_Jual_Per_Biji']], use_container_width=True)
-            else:
-                st.success("Semua stok obat aman dari kedaluwarsa dalam 3 bulan.")
-        
-        st.write("Data Stok Master Obat:")
-        st.dataframe(df_obat.head(10), use_container_width=True)
-    else:
-        st.warning("Data Praktek Dokter tidak dapat dimuat.")
+            if 'Tanggal_Kedaluwarsa' in df_obat_master.columns:
+                df_obat_master['Tanggal_Kedaluwarsa'] = pd.to_datetime(df_obat_master['Tanggal_Kedaluwarsa'], errors='coerce')
+                
+                expired_soon = df_obat_master[
+                    (df_obat_master['Tanggal_Kedaluwarsa'].dt.normalize() >= today) & 
+                    (df_obat_master['Tanggal_Kedaluwarsa'].dt.normalize() <= three_months_ahead)
+                ].sort_values('Tanggal_Kedaluwarsa')
+                
+                if not expired_soon.empty:
+                    st.error(f"🚨 **PERINGATAN!** Ada {len(expired_soon)} item akan Kedaluwarsa dalam 3 Bulan:")
+                    st.dataframe(expired_soon[['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan']], use_container_width=True)
+                else:
+                    st.success("Semua stok obat aman dari kedaluwarsa dalam 3 bulan.")
+            
+            st.subheader("Data Stok Master Obat")
+            st.dataframe(df_obat_master.head(10), use_container_width=True)
+        else:
+            st.warning("Data Master Obat tidak dapat dimuat.")
+
+    # --- SUB-TAB 2: RESEP KELUAR (OBAT KELUAR) ---
+    with sub_tab_resep:
+        st.markdown("### Pencatatan Resep Obat Keluar & Kasir Apotek")
+
+        # --- FORM PENCATATAN RESEP ---
+        with st.expander("➕ Input Resep Obat Keluar"):
+            
+            st.text_input("Nama Pasien", key="pasien_resep")
+            st.text_area("Detail Obat Diberikan (Contoh: Paracetamol 1 Strip, Amoxilin 10 Biji)", key="obat_diberikan")
+            st.text_area("Aturan Pemakaian Obat (Sesuai Resep)", key="aturan_pakai")
+            
+            col_total, col_btn = st.columns([2, 1])
+            with col_total:
+                total_biaya = st.number_input("Total Biaya Obat (Rp)", min_value=0, step=1000, key="total_resep")
+            with col_btn:
+                st.markdown("<br>", unsafe_allow_html=True) # Spacer
+                if st.button("Simpan Resep & Transaksi", key="btn_save_resep"):
+                    st.success(f"Resep untuk {st.session_state.pasien_resep} tersimpan dengan total Rp {st.session_state.total_resep:,.0f}.")
+                    
+                    # --- SIMULASI PRINT INVOICE ---
+                    st.info("Simulasi Print Invoice...")
+                    time.sleep(1)
+                    st.success("Invoice siap dicetak/diunduh!")
+                    st.cache_data.clear()
+
+        st.subheader("Data Resep Keluar Terbaru")
+        if df_resep_keluar is not None:
+            st.dataframe(df_resep_keluar.head(10), use_container_width=True)
+        else:
+            st.warning("Data Resep Keluar tidak dapat dimuat.")
+
+    # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT ---
+    with sub_tab_faktur:
+        st.markdown("### Pencatatan Faktur Pembelian Obat (Restock)")
+
+        # --- FORM FAKTUR PEMBELIAN ---
+        with st.expander("➕ Input Faktur Pembelian Obat Baru"):
+            col_faktur, col_supplier = st.columns(2)
+            with col_faktur:
+                st.text_input("Nomor Faktur", key="no_faktur")
+            with col_supplier:
+                st.text_input("Nama Supplier", key="nama_supplier")
+                
+            st.date_input("Tanggal Pembelian", key="tgl_beli")
+            st.number_input("Total Biaya Faktur (Rp)", min_value=0, step=1000, key="total_faktur")
+            st.text_area("Detail Item yang Dibeli", help="Contoh: Amoxilin 5 Box, Exp 2026-10-01", key="detail_faktur")
+            
+            if st.button("Simpan Faktur Pembelian", key="btn_save_faktur"):
+                st.success(f"Faktur No. {st.session_state.no_faktur} dari {st.session_state.nama_supplier} tersimpan.")
+                st.cache_data.clear() 
+
+        st.subheader("Data Faktur Pembelian Obat Terbaru")
+        if df_faktur_obat is not None:
+            st.dataframe(df_faktur_obat.head(10), use_container_width=True)
+        else:
+            st.warning("Data Faktur Pembelian Obat tidak dapat dimuat.")
 
 
 # ===============================================================
-# 3. TAB WARKOP PAK SORDEN (Utang/Piutang & BEP)
+# 3. TAB WARKOP PAK SORDEN (Cost Estimator)
 # ===============================================================
 with tab_warkop:
     st.header("Dashboard Warkop Pak Sorden")
     
-    # Membuat SUB-TAB KHUSUS di dalam Tab Warkop
-    sub_tab_dash, sub_tab_bep = st.tabs(["Transaksi Kasir (Utang/Piutang)", "Kalkulator BEP"])
+    sub_tab_dash, sub_tab_cost_estimator = st.tabs(["Transaksi Kasir (Utang/Piutang)", "Kalkulator Biaya Menu"])
     
     with sub_tab_dash:
-        st.subheader("Pencatatan Kasir & Transaksi")
+        st.markdown("### Pencatatan Kasir & Transaksi")
         
         # --- FORM KASIR WARKOP (Utang/Piutang) ---
         with st.expander("💸 Input Transaksi Penjualan Warkop"):
@@ -286,7 +349,7 @@ with tab_warkop:
             with col_type:
                 jenis_transaksi = st.selectbox(
                     "Jenis Transaksi", 
-                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "**Pembelian Utang (Kita Berutang ke Supplier)**"],
+                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "Pembelian Utang (Kita Berutang)"],
                     key="tr_type_warkop"
                 )
             with col_amount:
@@ -307,27 +370,30 @@ with tab_warkop:
         else:
             st.warning("Data Transaksi Warkop Pak Sorden tidak dapat dimuat.")
     
-    with sub_tab_bep:
-        st.subheader("Kalkulator BEP (Break-Even Point) untuk Menu Warkop")
+    with sub_tab_cost_estimator:
+        st.markdown("### Kalkulator Biaya Menu (Cost Estimator)")
+        st.markdown("Gunakan kalkulator ini untuk menentukan **Biaya Pokok** satu porsi/gelas menu.")
         
-        col_input, col_result = st.columns(2)
+        col_base, col_packaging, col_labor, col_misc = st.columns(4)
         
-        with col_input:
-            st.subheader("Input Biaya")
-            fixed_cost = st.number_input("1. Biaya Tetap Bulanan", min_value=0.0, value=5000000.0, format="%.0f", key="fc_warkop")
-            unit_cost = st.number_input("2. Biaya Variabel per Unit", min_value=0.0, value=5000.0, format="%.0f", key="uc_warkop")
-            selling_price = st.number_input("3. Harga Jual per Unit", min_value=0.0, value=15000.0, format="%.0f", key="sp_warkop")
-            
-            calculate_button = st.button("Hitung BEP", key="bep_calc_btn")
+        with col_base:
+            base_cost = st.number_input("1. Biaya Bahan Baku Utama (per unit)", min_value=0.0, value=3000.0, format="%.0f", help="Contoh: Harga kopi, susu, sirup yang digunakan.")
+        with col_packaging:
+            packaging_cost = st.number_input("2. Biaya Kemasan/Pendukung (per unit)", min_value=0.0, value=500.0, format="%.0f", help="Contoh: Cup, sedotan, tisu.")
+        with col_labor:
+            labor_cost = st.number_input("3. Biaya Tenaga Kerja (per unit)", min_value=0.0, value=500.0, format="%.0f", help="Perkiraan gaji yang dikeluarkan untuk membuat satu menu.")
+        with col_misc:
+            misc_cost = st.number_input("4. Biaya Lain-lain (per unit)", min_value=0.0, value=200.0, format="%.0f", help="Contoh: Listrik/Gas, penyusutan alat.")
+        
+        calculate_button = st.button("Hitung Biaya Pokok Menu", key="cost_calc_btn")
 
-        with col_result:
-            st.subheader("Hasil Perhitungan")
-            if calculate_button:
-                message, bep_unit, bep_revenue = calculate_bep(fixed_cost, unit_cost, selling_price)
-                
-                if "Harga Jual" in message:
-                    st.error(message)
-                else:
-                    st.success(message)
-                    st.metric("Titik Impas (Unit)", f"{bep_unit:,.0f} Unit")
-                    st.metric("Titik Impas (Rupiah)", f"Rp {bep_revenue:,.0f}")
+        if calculate_button:
+            total_unit_cost, suggested_selling_price = calculate_menu_cost(base_cost, packaging_cost, labor_cost, misc_cost)
+            
+            st.markdown("---")
+            st.subheader("Hasil Estimasi")
+            
+            st.metric("Total Biaya Pokok (Unit Cost)", f"Rp {total_unit_cost:,.0f}")
+            st.metric("Perkiraan Harga Jual (Markup 50%)", f"Rp {suggested_selling_price:,.0f}", delta=f"Margin Rp {(suggested_selling_price - total_unit_cost):,.0f}")
+            
+            st.info("Harga Jual yang disarankan adalah **Rp {:.0f}** untuk mendapatkan margin 50%.".format(suggested_selling_price))
