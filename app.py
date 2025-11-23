@@ -24,7 +24,7 @@ def get_gspread_client():
         original_data = st.secrets["gcp_service_account"]
         
         # BARIS KRUSIAL: Buat salinan agar tidak melanggar aturan Read-Only Streamlit
-        credentials_data = original_data.copy() 
+        credentials_data = copy.copy(original_data)
         
         # --- PERBAIKAN FORMAT UNTUK CLOUD ---
         if 'private_key' in credentials_data:
