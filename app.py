@@ -31,28 +31,32 @@ if 'bahan_items' not in st.session_state:
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku' 
 
-# --- FUNGSI CSS PERBAIKAN ---
+# --- FUNGSI CSS PERBAIKAN EKSTREM ---
 def inject_custom_css():
     st.markdown("""
         <style>
-            /* 1. Fix Panah Ganda pada st.expander */
+            /* 1. FIX TEKS GANDA/ARROW GANDA (EKSTREM) */
+            /* Menyembunyikan elemen duplikasi teks dan ikon di Expander */
+            
+            /* Target elemen ikon panah */
             div[data-testid="stExpander"] button > div:first-child svg {
                 display: none !important; 
             }
             
-            /* 2. Fix Double Text/Bug Header */
+            /* Target teks judul yang berada di dalam konten block expander (sering jadi duplikasi) */
             .stExpander > div > div > div > p {
                 display: none !important; 
             }
             
-            /* 3. Styling Judul Expander Asli */
+            /* Target teks judul yang muncul di baris bawah tombol (sering jadi duplikasi kedua) */
             div[data-testid="stExpander"] button > div:nth-child(2) > p {
                 font-size: 1rem !important; 
                 font-weight: bold !important;
                 color: #5F3CD8 !important; 
+                /* Kita biarkan ini, ini adalah judul yang benar */
             }
 
-            /* 4. Styling Lanjutan */
+            /* 2. Styling Lanjutan */
             html, body, [class*="st-"] { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
             .stSidebar { background-color: #E0F2F1; }
             .stButton>button {
@@ -338,7 +342,7 @@ with tab_beras:
                         customer_info=f"**Pelanggan:** {tr_party_beras if tr_party_beras else 'Umum'}",
                         items_list=items,
                         total=tr_amount_beras,
-                        needs_signature=True # Perlu Tanda Terima
+                        needs_signature=True
                     )
                     
                     st.markdown("### Struk Siap Cetak")
@@ -357,7 +361,7 @@ with tab_beras:
 # 2. TAB PRAKTEK DOKTER
 # ===============================================================
 with tab_dokter:
-    st.header(f"Dashboard {NAMA_BISNIS_DOKTER.replace(r'\n', ' ')}") # Header tanpa \n
+    st.header(f"Dashboard {NAMA_BISNIS_DOKTER.replace(r'\n', ' ')}")
 
     sub_tab_master, sub_tab_resep, sub_tab_faktur = st.tabs([
         "Master Obat & Stok", 
@@ -421,11 +425,19 @@ with tab_dokter:
             pasien_resep = st.text_input("Nama Pasien", key="pasien_resep")
             total_resep = 0
             
-            st.markdown("""
-            | Nama Obat | Jumlah Biji | **Aturan Pakai** | Aksi |
-            | :--- | :--- | :--- | :--- |
-            """)
+            # Label Header yang Rapi (menggunakan kolom statis)
+            col_header = st.columns([3, 1, 3, 1])
+            with col_header[0]:
+                st.markdown("**Nama Obat**")
+            with col_header[1]:
+                st.markdown("**Jumlah**")
+            with col_header[2]:
+                st.markdown("**Aturan Pakai**")
+            with col_header[3]:
+                st.markdown("**Aksi**")
+            st.markdown("---") # Garis pemisah
             
+            # --- Perbaikan: Menghapus tabel Markdown yang aneh dan hanya menggunakan kolom ---
             for i, item in enumerate(st.session_state.resep_items):
                 cols = st.columns([3, 1, 3, 1])
                 
@@ -436,12 +448,13 @@ with tab_dokter:
                 with cols[2]:
                     item['aturan'] = st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
                 with cols[3]:
-                    st.markdown("<br>", unsafe_allow_html=True)
+                    # st.markdown("<br>", unsafe_allow_html=True) # Tidak perlu break line
                     if st.button("Hapus", key=f"del_resep_{i}"):
                         remove_resep_item(i)
                         st.experimental_rerun()
                 
                 total_resep += item['jumlah'] * 1000 
+            # --- End Perbaikan Resep ---
             
             st.markdown("---")
             col_add, col_final = st.columns([1, 2])
@@ -452,7 +465,7 @@ with tab_dokter:
                 
             if st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep"):
                 st.success(f"Resep untuk {pasien_resep} tersimpan & **Stok berhasil dikurangi**.")
-                st.info("Invoice sedang dibuat...")
+                st.info("Struk sedang dibuat...")
                 time.sleep(1)
                 
                 # --- LOGIKA CETAK STRUK RESEP ---
@@ -470,13 +483,12 @@ with tab_dokter:
                     customer_info=f"**Pasien:** {pasien_resep}",
                     items_list=items_resep,
                     total=total_resep,
-                    needs_signature=False # TIDAK PERLU Tanda Tangan
+                    needs_signature=False
                 )
                 
                 st.markdown("### Struk Resep Siap Cetak")
                 st.markdown(receipt_html, unsafe_allow_html=True)
                 st.button("🖼️ Cetak Struk Resep", help="Klik untuk membuka dialog cetak browser", key="print_resep_btn")
-                # --- END LOGIKA CETAK RESEP ---
 
         st.subheader("Data Resep Keluar Terbaru")
         if df_resep_keluar is not None:
@@ -512,14 +524,13 @@ with tab_dokter:
                     customer_info=f"**Supplier:** {nama_supplier}",
                     items_list=items_faktur,
                     total=total_faktur,
-                    needs_signature=True, # PERLU Tanda Terima
+                    needs_signature=True,
                     no_faktur=no_faktur
                 )
                 
                 st.markdown("### Faktur Siap Cetak")
                 st.markdown(receipt_html, unsafe_allow_html=True)
                 st.button("🖼️ Cetak Faktur Pembelian", help="Klik untuk membuka dialog cetak browser", key="print_faktur_btn")
-                # --- END LOGIKA CETAK FAKTUR ---
 
         st.subheader("Data Faktur Pembelian Obat Terbaru")
         if df_faktur_obat is not None:
