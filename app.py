@@ -1,36 +1,81 @@
 import streamlit as st
-import pandas as pd
 import gspread
-from datetime import datetime
+import pandas as pd
 import json
-import io
-import time
-import os 
-import sys 
+import os
 from oauth2client.service_account import ServiceAccountCredentials
+import numpy as np 
+from datetime import timedelta
 
+# --- KONFIGURASI APLIKASI ---
+st.set_page_config(
+    page_title="Dashboard Bisnis GR8TER", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Kunci yang digunakan untuk koneksi gspread
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
-SHEET_NAME = 'Database Bisnisku'
+SHEET_NAME = 'Database Bisnisku' 
 
-# Hapus import copy jika masih ada
+# --- FUNGSI CSS INJECTION (Ungu-Hijau Muda, Rounded) ---
+def inject_custom_css():
+    st.markdown("""
+        <style>
+            /* 1. Base Font & Theme */
+            html, body, [class*="st-"] {
+                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            }
+            /* 2. Warna Dasar (Ungu & Hijau Muda) */
+            .stSidebar {
+                background-color: #E0F2F1; /* Hijau muda */
+            }
+            /* 3. Button Styling (Rounded & Soft) */
+            .stButton>button {
+                background-color: #7350F2; /* Ungu Utama */
+                color: white;
+                border-radius: 12px; 
+                border: none;
+                padding: 10px 20px;
+                transition: 0.3s;
+            }
+            .stButton>button:hover {
+                background-color: #5F3CD8; 
+            }
+            /* 4. Input Styling (Rounded) */
+            .stTextInput>div>div>input, .stNumberInput>div>div>input {
+                border-radius: 8px;
+                border: 1px solid #7350F2; 
+                padding: 8px;
+            }
+            /* 5. Header Styling */
+            h1, h2, h3 {
+                color: #5F3CD8; 
+            }
+            /* 6. Tabs Styling */
+            .stTabs [data-baseweb="tab-list"] button {
+                border-radius: 8px 8px 0px 0px;
+                font-weight: bold;
+            }
+        </style>
+        """, 
+        unsafe_allow_html=True)
 
+# Panggil fungsi CSS di awal
+inject_custom_css()
+
+
+# --- FUNGSI KONEKSI GSPREAD (SUDAH DIPERBAIKI) ---
 @st.cache_resource
 def get_gspread_client():
-    """Menginisialisasi koneksi Gspread dengan mekanisme yang dijamin berhasil di Cloud."""
+    """Menginisialisasi koneksi Gspread yang stabil menggunakan oauth2client."""
     credentials_data = None
     
     if 'gcp_service_account' in st.secrets:
-        # Mode Cloud Deployment
         original_data = st.secrets["gcp_service_account"]
         credentials_data = dict(original_data) 
         
-        # HAPUS BARIS INI: if 'private_key' in credentials_data:
-        # HAPUS BARIS INI:     credentials_data['private_key'] = credentials_data['private_key'].replace('\\n', '\n')
-            
     elif os.path.exists(SERVICE_ACCOUNT_FILE):
-        # Mode Local Testing
-        # ... (kode membaca secrets.json di sini)
-        # ...
         try:
             with open(SERVICE_ACCOUNT_FILE, 'r') as f:
                 credentials_data = json.load(f)
@@ -39,9 +84,7 @@ def get_gspread_client():
     
     if credentials_data:
         try:
-            # Tetap gunakan oauth2client karena ini adalah metode paling stabil
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            # PASTIKAN SEMUA VARIABEL KREDENSIAL DIBERIKAN DI SINI
             creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_data, scope)
             
             gc = gspread.authorize(creds)
@@ -53,305 +96,238 @@ def get_gspread_client():
     else:
         st.error("Gagal menemukan kredensial. Pastikan secrets.toml sudah dikonfigurasi di Streamlit Cloud.")
         return None
-        
+
+# --- FUNGSI LOAD DATA ---
 @st.cache_data(ttl=5) 
 def load_data(sheet_name):
     sh = get_gspread_client()
     if sh:
         try:
             worksheet = sh.worksheet(sheet_name)
-            data = worksheet.get_all_records()
-            return pd.DataFrame(data)
+            data = worksheet.get_all_values()
+            df = pd.DataFrame(data[1:], columns=data[0])
+            for col in df.columns:
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except:
+                    pass
+            return df
         except gspread.WorksheetNotFound:
-            st.error(f"Sheet/Tab '{sheet_name}' tidak ditemukan di Google Sheets. Cek nama tab Sheets Anda.")
-            return pd.DataFrame()
-    return pd.DataFrame()
+            st.warning(f"Worksheet '{sheet_name}' tidak ditemukan. Mohon cek kembali nama sheet di Google Sheets Anda.")
+            return None
+    return None
 
-def append_row(sheet_name, row_data):
-    sh = get_gspread_client()
-    if sh:
-        worksheet = sh.worksheet(sheet_name)
-        worksheet.append_row(row_data)
-
-def update_row(sheet_name, row_index, new_values):
-    sh = get_gspread_client()
-    if sh:
-        worksheet = sh.worksheet(sheet_name)
-        sheet_row_number = row_index + 2 
-        worksheet.update(f'F{sheet_row_number}:G{sheet_row_number}', [new_values])
+# --- FUNGSI BEP CALCULATION ---
+def calculate_bep(fixed_cost, unit_cost, selling_price):
+    if selling_price <= unit_cost:
+        return "Harga Jual harus lebih besar dari Biaya Variabel per Unit!", 0, 0
+    contribution_margin_per_unit = selling_price - unit_cost
+    bep_unit = fixed_cost / contribution_margin_per_unit
+    bep_revenue = bep_unit * selling_price
+    return "BEP Berhasil Dihitung", bep_unit, bep_revenue
 
 
-def format_rupiah(angka):
-    if not isinstance(angka, (int, float)):
-        try:
-            angka = float(str(angka).replace('.', '').replace(',', ''))
-        except:
-            return "Rp 0"
-    return f"Rp {int(angka):,}".replace(",", ".")
-
-def to_excel(df, sheet_name):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-    return output.getvalue()
-
-st.set_page_config(page_title="Sistem Bisnis Cloud", layout="wide")
-st.title("🚀 Dashboard Bisnis (Cloud Ready)")
-
-menu = st.sidebar.selectbox("Pilih Unit Bisnis", 
-    ["Beras Tuju Tuju Mart", "Praktek Dokter", "Warkop Pak Sorden"])
+# --- PENGELOMPOKAN DATA BERDASARKAN BISNIS (ASUMSI NAMA SHEET) ---
+# PASTIKAN NAMA SHEET INI SESUAI DENGAN GOOGLE SHEETS ANDA
+df_beras_master = load_data("beras_master") 
+df_beras_trx = load_data("beras_transaksi")
+df_obat = load_data("master_obat") 
+df_warkop_trx = load_data("warkop_transaksi") 
 
 
-# ================= BERAS TUJU TUJU MART =================
-if menu == "Beras Tuju Tuju Mart":
-    st.header("🌾 Beras Tuju Tuju Mart: Kasir & Piutang")
+# --- LOGIKA TAMPILAN UTAMA ---
+
+st.title("Dashboard Bisnis GR8TER")
+
+# Membuat Tab Utama untuk setiap bisnis
+tab_beras, tab_dokter, tab_warkop = st.tabs([
+    "🌾 Beras Tuju-Tuju Mart", 
+    "🩺 Praktek Dokter", 
+    "☕ Warkop Pak Sorden"
+])
+
+
+# ===============================================================
+# 1. TAB BERAS TUJU-TUJU MART (Master + Kasir + Utang/Piutang)
+# ===============================================================
+with tab_beras:
+    st.header("Dashboard Beras Tuju-Tuju Mart")
     
-    tab1, tab2, tab3 = st.tabs(["1. Master Stok", "2. Kasir (Order Baru)", "3. Pelunasan & Riwayat"])
+    # Membuat SUB-TAB KHUSUS di dalam Tab Beras
+    sub_tab_master, sub_tab_kasir = st.tabs(["Master Stok & Harga Beli", "Transaksi Kasir & Utang/Piutang"])
     
-    with tab1:
-        st.subheader("Master Stok & Harga Jual Default")
-        col1, col2, col3 = st.columns(3)
-        with col1: b_nama = st.text_input("Nama Beras")
-        with col2: b_harga = st.number_input("Harga Jual (Rp)", min_value=0, step=500)
-        with col3: b_stok = st.number_input("Stok Fisik", min_value=0)
-            
-        if st.button("Simpan Master Beras"):
-            append_row("beras_stok", [b_nama, b_harga, b_stok])
-            st.success("Master Beras Tersimpan!")
-            st.cache_data.clear() 
-            st.rerun()
-
-        st.divider()
-        df_master = load_data("beras_stok")
-        st.dataframe(df_master, use_container_width=True)
-        if not df_master.empty:
-            st.download_button("📥 Download Master Stok", to_excel(df_master, "MasterStok"), 'master_beras.xlsx')
-
-    with tab2:
-        st.subheader("Catat Pesanan Pelanggan (Otomatis Piutang)")
-        df_master = load_data("beras_stok")
+    with sub_tab_master:
+        st.subheader("Pencatatan Master Stok & Harga Beli")
         
-        col_ord1, col_ord2 = st.columns(2)
-        with col_ord1: 
-            nama_pelanggan = st.text_input("Nama Pelanggan")
-            tgl_order = st.date_input("Tanggal Order", datetime.now())
-        
-        pilih_item = None
-        harga_jual = 0
-        if not df_master.empty and 'Nama Beras' in df_master.columns and 'Harga Jual (Rp)' in df_master.columns:
-            item_list = df_master['Nama Beras'].tolist()
-            pilih_item = st.selectbox("Pilih Item Beras", item_list)
-            df_master['Harga Jual (Rp)'] = pd.to_numeric(df_master['Harga Jual (Rp)'], errors='coerce').fillna(0)
+        # --- FORM INPUT MASTER BERAS ---
+        with st.expander("➕ Input Stok/Master Beras Baru"):
+            st.subheader("Input Data Master")
             
-            if pilih_item:
-                harga_jual = df_master[df_master['Nama Beras'] == pilih_item]['Harga Jual (Rp)'].iloc[0]
-            st.info(f"Harga Jual Default: {format_rupiah(harga_jual)}")
+            col_name, col_buy, col_sell, col_stock = st.columns(4)
+            with col_name:
+                nama_beras = st.text_input("Nama/Jenis Beras", key="nama_beras_master")
+            with col_buy:
+                # 1. Harga Beli untuk Master
+                harga_beli = st.number_input("**Harga Beli (per kg/unit)**", min_value=0, step=1000, key="hb_beras")
+            with col_sell:
+                 # 2. Harga Jual untuk Master
+                harga_jual = st.number_input("**Harga Jual (per kg/unit)**", min_value=0, step=1000, key="hj_beras_master")
+            with col_stock:
+                stok = st.number_input("Stok Awal (kg)", min_value=0, step=1, key="stok_beras_master")
+            
+            if st.button("Simpan Master Beras", key="btn_save_master_beras"):
+                st.success(f"Master {nama_beras} tersimpan.")
+                st.cache_data.clear() 
+
+        st.subheader("Data Master Beras Terbaru")
+        if df_beras_master is not None:
+            st.dataframe(df_beras_master.head(10), use_container_width=True)
         else:
-            st.warning("Mohon isi Master Stok dulu di Tab 1.")
+            st.warning("Data Master Beras Tuju-Tuju Mart tidak dapat dimuat.")
 
-        with col_ord2:
-            jumlah = st.number_input("Jumlah Beli", min_value=1)
-            total_bayar = st.number_input("Total Transaksi", value=int(harga_jual * jumlah), step=1000)
-            keterangan = st.text_area("Keterangan", height=100)
-            
-        if st.button("Simpan Pesanan & Piutang"):
-            if pilih_item and nama_pelanggan:
-                append_row("beras_orders", [
-                    int(time.time()), 
-                    tgl_order.strftime("%Y-%m-%d"), 
-                    nama_pelanggan, 
-                    pilih_item, 
-                    jumlah, 
-                    "BELUM LUNAS", 
-                    "-" 
-                ])
-                st.success(f"Pesanan {nama_pelanggan} berhasil dicatat sebagai piutang!")
-                st.cache_data.clear()
-                st.rerun()
-
-    with tab3:
-        st.subheader("Cek Piutang & Catat Pelunasan")
-        df_orders = load_data("beras_orders")
+    with sub_tab_kasir:
+        st.subheader("Pencatatan Transaksi Kasir & Utang/Piutang")
         
-        if not df_orders.empty and 'Status' in df_orders.columns:
-            df_piutang = df_orders[df_orders['Status'] == 'BELUM LUNAS']
+        # --- FORM KASIR BERAS (Utang/Piutang) ---
+        with st.expander("💸 Input Transaksi Penjualan/Pembelian Beras"):
             
-            st.markdown("#### Daftar Piutang Aktif")
-            st.dataframe(df_piutang, use_container_width=True)
+            col_type, col_amount, col_party = st.columns(3)
+            with col_type:
+                # Pilihan Utang/Piutang/Tunai
+                jenis_transaksi = st.selectbox(
+                    "Jenis Transaksi", 
+                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "**Pembelian Utang (Kita Berutang ke Supplier)**"],
+                    key="tr_type_beras"
+                )
+            with col_amount:
+                jumlah = st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_beras")
+            with col_party:
+                pihak = st.text_input("**Pihak Terkait** (Nama Pelanggan/Supplier)", key="tr_party_beras")
             
-            if not df_piutang.empty and 'OrderID' in df_piutang.columns:
-                piutang_list = df_piutang.apply(
-                    lambda row: f"{row['OrderID']} | {row['Pelanggan']} ({row['Tanggal Order']})", axis=1
-                ).tolist()
-                
-                st.write("---")
-                st.markdown("#### Input Pelunasan")
-                col_p1, col_p2 = st.columns(2)
-                with col_p1:
-                    order_pilih = st.selectbox("Pilih Pesanan yang Dilunaskan", piutang_list)
-                with col_p2:
-                    tgl_lunas = st.date_input("Tanggal Pelunasan", datetime.now())
-                
-                if st.button("Catat Pelunasan"):
-                    order_id = int(order_pilih.split(' | ')[0])
-                    row_to_update = df_orders[df_orders['OrderID'] == order_id].index[0]
-                    
-                    update_row("beras_orders", row_to_update, ["LUNAS", tgl_lunas.strftime("%Y-%m-%d")])
-                    
-                    st.success(f"Piutang Order ID {order_id} LUNAS!")
-                    st.cache_data.clear()
-                    st.rerun()
+            st.text_area("Catatan Transaksi", max_chars=200, key="catatan_beras")
+            
+            if st.button("Simpan Transaksi Kasir", key="btn_save_transaksi_beras"):
+                st.success(f"Transaksi {jenis_transaksi} sebesar Rp {jumlah:,.0f} dengan {pihak} tersimpan.")
+                st.cache_data.clear() 
 
-        st.markdown("#### Seluruh Riwayat Pesanan")
-        st.dataframe(df_orders, use_container_width=True)
+        st.subheader("Data Transaksi Terbaru Beras Tuju-Tuju Mart")
+        if df_beras_trx is not None:
+            st.dataframe(df_beras_trx.head(10), use_container_width=True)
+        else:
+            st.warning("Data Transaksi Beras Tuju-Tuju Mart tidak dapat dimuat.")
 
 
-# ================= PRAKTEK DOKTER =================
-elif menu == "Praktek Dokter":
-    st.header("🩺 Sistem Manajemen Klinik")
+# ===============================================================
+# 2. TAB PRAKTEK DOKTER (Master Obat Lengkap)
+# ===============================================================
+with tab_dokter:
+    st.header("Dashboard Praktek Dokter")
     
-    df_obat_stok = load_data("obat_stok")
-    
-    # --- Stock Warning ---
-    if not df_obat_stok.empty and 'Stok' in df_obat_stok.columns and 'Batas Min' in df_obat_stok.columns:
-        df_obat_stok['Stok'] = pd.to_numeric(df_obat_stok['Stok'], errors='coerce').fillna(0)
-        df_obat_stok['Batas Min'] = pd.to_numeric(df_obat_stok['Batas Min'], errors='coerce').fillna(0)
-        kritis = df_obat_stok[df_obat_stok['Stok'] <= df_obat_stok['Batas Min']]
-        if not kritis.empty:
-            st.error(f"⚠️ PERINGATAN: Ada {len(kritis)} obat stoknya menipis! **(Update Stok Manual di Google Sheets)**")
-            st.dataframe(kritis)
-
-    tab_d1, tab_d2 = st.tabs(["Tulis Resep & Cetak", "Kelola Master Obat"])
-
-    # --- TAB 1: TULIS RESEP ---
-    with tab_d1:
-        st.subheader("Tulis Resep Pasien")
+    # --- FORM INPUT MASTER OBAT BARU ---
+    with st.expander("➕ Input Master Obat Baru (Lengkap)"):
+        st.subheader("Pencatatan Master Obat")
         
-        col_pasien1, col_pasien2 = st.columns(2)
-        with col_pasien1:
-            nama_pasien = st.text_input("Nama Pasien")
-        with col_pasien2:
-            tgl_resep = st.date_input("Tanggal Periksa", datetime.now())
+        col_name, col_price, col_unit = st.columns(3)
+        with col_name:
+            nama_obat = st.text_input("Nama Obat", key="nama_obat")
+        with col_price:
+            harga_per_biji = st.number_input("**Harga Jual (per biji)**", min_value=0, step=100, key="hj_obat")
+        with col_unit:
+            st.selectbox("**Satuan**", ["Box", "Strip", "Biji", "Botol"], key="satuan_obat")
+            
+        expired_date = st.date_input("Tanggal Kedaluwarsa (Expired Date)", key="ed_obat")
+        
+        if st.button("Simpan Master Obat", key="btn_save_master_obat"):
+            st.success(f"Master {nama_obat} tersimpan.")
+            st.cache_data.clear() 
 
-        st.write("---")
-        c1, c2, c3 = st.columns([2, 1, 2])
-        obat_list = df_obat_stok['Nama Obat'].tolist() if not df_obat_stok.empty and 'Nama Obat' in df_obat_stok.columns else []
+    # --- DATA & WARNING EXPIRED DATE ---
+    if df_obat is not None:
+        st.subheader("Data Stok Obat & Peringatan Kedaluwarsa")
         
-        with c1:
-            pilih_obat = st.selectbox("Pilih Obat", obat_list) if obat_list else None
-        with c2:
-            jml_obat = st.number_input("Jumlah", min_value=1, value=10)
-        with c3:
-            aturan = st.text_input("Aturan Pakai", placeholder="Cth: 3x1 Sesudah Makan")
+        today = pd.to_datetime('today').normalize()
+        three_months_ahead = today + timedelta(days=90) 
         
-        if st.button("✅ Proses & Catat Resep"):
-            if pilih_obat and nama_pasien:
-                append_row("obat_transaksi", [
-                    int(time.time()),
-                    tgl_resep.strftime("%Y-%m-%d"),
-                    pilih_obat,
-                    jml_obat,
-                    aturan,
-                    nama_pasien
-                ])
-                
-                st.success("Resep berhasil dicatat di riwayat transaksi! **(Jangan lupa kurangi stok di Google Sheets)**")
-                
-                # Tampilan Kertas Resep
-                st.write("---")
-                st.write("### 👇 Tampilan Cetak (Tekan Ctrl + P)")
-                
-                with st.container(border=True):
-                    st.markdown(f"""
-                    <div style="text-align: center;">
-                        <h2>KLINIK DOKTER</h2>
-                        <p>Jl. Sehat Selalu No. 123</p>
-                        <hr>
-                    </div>
-                    <p><strong>Tanggal:</strong> {tgl_resep.strftime("%d-%m-%Y")}</p>
-                    <p><strong>Nama Pasien:</strong> {nama_pasien}</p>
-                    <br>
-                    <table style="width:100%; border-collapse: collapse;">
-                        <tr style="border-bottom: 1px solid #ddd;">
-                            <th style="text-align:left;">Nama Obat</th>
-                            <th style="text-align:center;">Jml</th>
-                            <th style="text-align:right;">Aturan Pakai</th>
-                        </tr>
-                        <tr>
-                            <td style="padding: 8px 0;">{pilih_obat}</td>
-                            <td style="text-align:center;">{jml_obat}</td>
-                            <td style="text-align:right;"><strong>{aturan}</strong></td>
-                        </tr>
-                    </table>
-                    """, unsafe_allow_html=True)
+        if 'Tanggal_Kedaluwarsa' in df_obat.columns:
+            df_obat['Tanggal_Kedaluwarsa'] = pd.to_datetime(df_obat['Tanggal_Kedaluwarsa'], errors='coerce')
+            
+            expired_soon = df_obat[
+                (df_obat['Tanggal_Kedaluwarsa'].dt.normalize() >= today) & 
+                (df_obat['Tanggal_Kedaluwarsa'].dt.normalize() <= three_months_ahead)
+            ].sort_values('Tanggal_Kedaluwarsa')
+            
+            if not expired_soon.empty:
+                st.error(f"🚨 **PERINGATAN!** Ada {len(expired_soon)} item akan Kedaluwarsa dalam 3 Bulan:")
+                st.dataframe(expired_soon[['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan', 'Harga_Jual_Per_Biji']], use_container_width=True)
             else:
-                st.warning("Mohon isi Nama Pasien dan pastikan Master Obat sudah diinput.")
-
-    # --- TAB 2: KELOLA MASTER ---
-    with tab_d2:
-        st.subheader("Input Master Obat Baru")
-        co1, co2, co3 = st.columns(3)
-        with co1: nama = st.text_input("Nama Obat Baru")
-        with co2: stok = st.number_input("Stok Awal", 0)
-        with co3: batas = st.number_input("Batas Peringatan", 10)
+                st.success("Semua stok obat aman dari kedaluwarsa dalam 3 bulan.")
         
-        if st.button("Simpan Obat ke Master Gudang"):
-            append_row("obat_stok", [nama, stok, batas])
-            st.success(f"{nama} masuk ke master data.")
-            st.cache_data.clear()
-            st.rerun()
-
-        st.divider()
-        st.subheader("Daftar Stok Obat & Riwayat Resep")
-        st.write("Stok Saat Ini (Perlu Update Manual di Sheets):")
-        st.dataframe(df_obat_stok, use_container_width=True)
-        st.write("Riwayat Resep Keluar:")
-        st.dataframe(load_data("obat_transaksi"), use_container_width=True)
+        st.write("Data Stok Master Obat:")
+        st.dataframe(df_obat.head(10), use_container_width=True)
+    else:
+        st.warning("Data Praktek Dokter tidak dapat dimuat.")
 
 
-# ================= WARKOP PAK SORDEN =================
-elif menu == "Warkop Pak Sorden":
-    st.header("☕ Warkop Pak Sorden: Analisis Margin")
+# ===============================================================
+# 3. TAB WARKOP PAK SORDEN (Utang/Piutang & BEP)
+# ===============================================================
+with tab_warkop:
+    st.header("Dashboard Warkop Pak Sorden")
     
-    st.subheader("Input Transaksi & Biaya")
-    col_tgl, col_tipe = st.columns(2)
-    with col_tgl: tgl = st.date_input("Tgl Transaksi", datetime.now())
-    with col_tipe: tipe = st.selectbox("Jenis", ["Pemasukan", "Pengeluaran"])
+    # Membuat SUB-TAB KHUSUS di dalam Tab Warkop
+    sub_tab_dash, sub_tab_bep = st.tabs(["Transaksi Kasir (Utang/Piutang)", "Kalkulator BEP"])
     
-    col_nom, col_bahan = st.columns(2)
-    with col_nom: nom = st.number_input("Harga Jual / Nominal", 0, step=1000)
-    with col_bahan: 
-        bahan = st.number_input("Harga Bahan Perkiraan (0 jika Pengeluaran)", 0, step=500)
+    with sub_tab_dash:
+        st.subheader("Pencatatan Kasir & Transaksi")
+        
+        # --- FORM KASIR WARKOP (Utang/Piutang) ---
+        with st.expander("💸 Input Transaksi Penjualan Warkop"):
+            col_type, col_amount, col_party = st.columns(3)
+            with col_type:
+                jenis_transaksi = st.selectbox(
+                    "Jenis Transaksi", 
+                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "**Pembelian Utang (Kita Berutang ke Supplier)**"],
+                    key="tr_type_warkop"
+                )
+            with col_amount:
+                jumlah = st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_warkop")
+            with col_party:
+                pihak = st.text_input("Pihak Terkait (Nama Pelanggan/Supplier)", key="tr_party_warkop")
+            
+            st.text_area("Catatan Transaksi", max_chars=200, key="catatan_warkop")
+            
+            if st.button("Simpan Transaksi", key="btn_save_transaksi_warkop"):
+                st.success(f"Transaksi {jenis_transaksi} sebesar Rp {jumlah:,.0f} tersimpan.")
+                st.cache_data.clear() 
+
+        st.markdown("---")
+        st.subheader("Data Transaksi Terbaru Warkop")
+        if df_warkop_trx is not None:
+            st.dataframe(df_warkop_trx.head(10), use_container_width=True)
+        else:
+            st.warning("Data Transaksi Warkop Pak Sorden tidak dapat dimuat.")
     
-    ket = st.text_input("Keterangan Barang")
-    
-    if st.button("Input Kasir"):
-        append_row("kopi_keuangan", [tgl.strftime("%Y-%m-%d"), tipe, nom, ket, bahan])
-        st.success("Input Kasir Tersimpan!")
-        st.cache_data.clear()
-        st.rerun()
+    with sub_tab_bep:
+        st.subheader("Kalkulator BEP (Break-Even Point) untuk Menu Warkop")
+        
+        col_input, col_result = st.columns(2)
+        
+        with col_input:
+            st.subheader("Input Biaya")
+            fixed_cost = st.number_input("1. Biaya Tetap Bulanan", min_value=0.0, value=5000000.0, format="%.0f", key="fc_warkop")
+            unit_cost = st.number_input("2. Biaya Variabel per Unit", min_value=0.0, value=5000.0, format="%.0f", key="uc_warkop")
+            selling_price = st.number_input("3. Harga Jual per Unit", min_value=0.0, value=15000.0, format="%.0f", key="sp_warkop")
+            
+            calculate_button = st.button("Hitung BEP", key="bep_calc_btn")
 
-    st.subheader("Laporan Laba/Rugi (dengan Margin)")
-    df_kopi = load_data("kopi_keuangan")
-
-    if not df_kopi.empty and 'Tipe' in df_kopi.columns and 'Nominal' in df_kopi.columns:
-        
-        for col in ['Nominal', 'Harga Bahan Perkiraan']:
-            if col in df_kopi.columns:
-                df_kopi[col] = pd.to_numeric(df_kopi[col], errors='coerce').fillna(0)
-            else:
-                df_kopi[col] = 0
-
-        masuk = df_kopi[df_kopi['Tipe'] == "Pemasukan"]['Nominal'].sum()
-        keluar = df_kopi[df_kopi['Tipe'] == "Pengeluaran"]['Nominal'].sum()
-        total_bahan = df_kopi[df_kopi['Tipe'] == "Pemasukan"]['Harga Bahan Perkiraan'].sum()
-        
-        margin_kotor = masuk - total_bahan 
-        bersih = margin_kotor - keluar 
-        
-        st.metric("Total Omset", format_rupiah(masuk))
-        st.metric("Total Biaya Bahan", format_rupiah(total_bahan))
-        st.metric("Keuntungan Bersih (Est.)", format_rupiah(bersih))
-        
-        st.dataframe(df_kopi, use_container_width=True)
-        st.download_button("📥 Download Laporan Warkop", to_excel(df_kopi, "WarkopKeuangan"), 'warkop_laporan.xlsx')
+        with col_result:
+            st.subheader("Hasil Perhitungan")
+            if calculate_button:
+                message, bep_unit, bep_revenue = calculate_bep(fixed_cost, unit_cost, selling_price)
+                
+                if "Harga Jual" in message:
+                    st.error(message)
+                else:
+                    st.success(message)
+                    st.metric("Titik Impas (Unit)", f"{bep_unit:,.0f} Unit")
+                    st.metric("Titik Impas (Rupiah)", f"Rp {bep_revenue:,.0f}")
