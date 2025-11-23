@@ -8,6 +8,9 @@ import time
 import os 
 import sys 
 
+st.cache_resource.clear() 
+st.cache_data.clear()
+
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku'
 
