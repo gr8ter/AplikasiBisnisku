@@ -7,12 +7,10 @@ import io
 import time
 import os 
 import sys 
-import copy
 
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku'
 
-# Fungsi untuk menginisialisasi koneksi Gspread
 @st.cache_resource
 def get_gspread_client():
     """Menginisialisasi koneksi Gspread menggunakan st.secrets (Cloud) atau file lokal JSON."""
@@ -23,12 +21,13 @@ def get_gspread_client():
         # Ambil data dari st.secrets
         original_data = st.secrets["gcp_service_account"]
         
-        # BARIS KRUSIAL: Buat salinan agar tidak melanggar aturan Read-Only Streamlit
-        credentials_data = copy.copy(original_data)
+        # --- PERBAIKAN RECURSION ERROR ---
+        # Gunakan constructor dict() untuk mengkonversi objek Streamlit ke dictionary yang aman diedit.
+        credentials_data = dict(original_data) 
         
         # --- PERBAIKAN FORMAT UNTUK CLOUD ---
         if 'private_key' in credentials_data:
-            # Sekarang kita bisa memodifikasi salinan ini
+            # Sekarang kita memodifikasi dictionary yang baru dibuat
             credentials_data['private_key'] = credentials_data['private_key'].replace('\\n', '\n')
             
     # 2. Mode Local Testing (Biarkan saja untuk kompatibilitas lokal)
@@ -38,7 +37,7 @@ def get_gspread_client():
             with open(SERVICE_ACCOUNT_FILE, 'r') as f:
                 credentials_data = json.load(f)
         except Exception:
-            pass # Asumsi kode sebelumnya sudah ada
+            pass
     
     if credentials_data:
         try:
@@ -50,8 +49,7 @@ def get_gspread_client():
     else:
         st.error("Gagal menemukan kredensial. Pastikan secrets.toml sudah dikonfigurasi di Streamlit Cloud.")
         return None
-
-
+        
 @st.cache_data(ttl=5) 
 def load_data(sheet_name):
     sh = get_gspread_client()
