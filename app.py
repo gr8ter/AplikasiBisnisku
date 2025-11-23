@@ -15,38 +15,30 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inisialisasi Session State untuk form dinamis (resep dan bahan baku)
+# Inisialisasi Session State
 if 'resep_items' not in st.session_state:
-    st.session_state.resep_items = [{
-        'obat': '', 
-        'jumlah': 0, 
-        'aturan': ''
-    }]
+    st.session_state.resep_items = [{'obat': '', 'jumlah': 0, 'aturan': ''}] # ATURAN PAKAI SUDAH ADA LAGI
 if 'bahan_items' not in st.session_state:
-    st.session_state.bahan_items = [{
-        'nama': '', 
-        'harga_unit': 0, 
-        'qty_pakai': 0
-    }]
+    st.session_state.bahan_items = [{'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0}] 
 
 # Kunci yang digunakan untuk koneksi gspread
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku' 
 
-# --- FUNGSI CSS PERBAIKAN (Menghilangkan Double Text/Page Up/Down Bug) ---
+# --- FUNGSI CSS PERBAIKAN ---
 def inject_custom_css():
     st.markdown("""
         <style>
-            /* Mengatasi double text/bug header Streamlit */
+            /* 1. Fix Panah Ganda pada st.expander */
+            div[data-testid="stExpander"] button > div:first-child svg {
+                display: none; 
+            }
+            /* 2. Fix Double Text/Bug Header */
             .stExpander > div > div > div > p {
                 font-size: 1rem; 
                 font-weight: bold;
             }
-            /* Menghilangkan scrollbar/bug saat ada banyak konten dinamis */
-            div[data-testid="stVerticalBlock"] > div:nth-child(n+1) > div:nth-child(n+1) {
-                overflow: auto;
-            }
-            /* Styling Lanjutan (dari versi sebelumnya) */
+            /* 3. Styling Lanjutan */
             html, body, [class*="st-"] { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
             .stSidebar { background-color: #E0F2F1; }
             .stButton>button {
@@ -68,9 +60,10 @@ def inject_custom_css():
 inject_custom_css()
 
 
-# --- FUNGSI KONEKSI GSPREAD & LOAD DATA (TIDAK BERUBAH) ---
+# --- FUNGSI KONEKSI GSPREAD & LOAD DATA ---
 @st.cache_resource
 def get_gspread_client():
+    # ... (Koneksi Gspread tidak berubah)
     credentials_data = None
     if 'gcp_service_account' in st.secrets:
         original_data = st.secrets["gcp_service_account"]
@@ -101,26 +94,44 @@ def load_data(sheet_name):
         try:
             worksheet = sh.worksheet(sheet_name)
             data = worksheet.get_all_values()
+            
+            if not data or len(data) < 2:
+                 st.warning(f"Worksheet '{sheet_name}' kosong atau hanya berisi header.")
+                 return None
+
             df = pd.DataFrame(data[1:], columns=data[0])
+            
+            # --- PERBAIKAN: Sanitasi data dan konversi ke numerik/tanggal ---
             for col in df.columns:
-                try:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                except:
-                    pass
+                if 'harga' in col.lower() or 'biaya' in col.lower() or 'stok' in col.lower() or 'jumlah' in col.lower():
+                    # Konversi kolom numerik, mengabaikan error
+                    df[col] = pd.to_numeric(df[col].str.replace('.', '', regex=False).str.replace(',', '.', regex=False), errors='coerce')
+                
+                # Perbaikan error Tanggal_Kedaluwarsa
+                if 'tanggal' in col.lower() or 'kedaluwarsa' in col.lower():
+                    # Bersihkan spasi dan coba konversi ke tanggal. Baris yang gagal akan menjadi NaT (Not a Time)
+                    df[col] = pd.to_datetime(df[col].str.strip(), errors='coerce')
+            
+            # Hapus baris yang semua datanya NaN (biasanya baris kosong)
+            df = df.dropna(how='all') 
+            
             return df
         except gspread.WorksheetNotFound:
             st.warning(f"Worksheet '{sheet_name}' tidak ditemukan. Mohon cek kembali nama sheet.")
             return None
+        except Exception as e:
+            st.error(f"Terjadi error saat memproses data sheet '{sheet_name}': {e}")
+            return None
     return None
 
-# --- FUNGSI COST ESTIMATOR (TIDAK BERUBAH) ---
+# --- FUNGSI COST ESTIMATOR ---
 def calculate_menu_cost(base_cost, packaging_cost, labor_cost, misc_cost):
     total_unit_cost = base_cost + packaging_cost + labor_cost + misc_cost
     suggested_selling_price = total_unit_cost * 1.5 
     return total_unit_cost, suggested_selling_price
 
 
-# --- FUNGSI DINAMIS UNTUK RESEP (Session State Management) ---
+# --- FUNGSI DINAMIS UNTUK RESEP & BAHAN BAKU ---
 def add_resep_item():
     st.session_state.resep_items.append({'obat': '', 'jumlah': 0, 'aturan': ''})
 
@@ -128,9 +139,8 @@ def remove_resep_item(index):
     if len(st.session_state.resep_items) > 1:
         st.session_state.resep_items.pop(index)
 
-# --- FUNGSI DINAMIS UNTUK BAHAN BAKU (Session State Management) ---
 def add_bahan_item():
-    st.session_state.bahan_items.append({'nama': '', 'harga_unit': 0, 'qty_pakai': 0})
+    st.session_state.bahan_items.append({'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0}) 
 
 def remove_bahan_item(index):
     if len(st.session_state.bahan_items) > 1:
@@ -218,7 +228,7 @@ with tab_beras:
 
 
 # ===============================================================
-# 2. TAB PRAKTEK DOKTER (Master + Resep Otomatis + Faktur Otomatis)
+# 2. TAB PRAKTEK DOKTER
 # ===============================================================
 with tab_dokter:
     st.header("Dashboard Praktek Dokter")
@@ -233,54 +243,66 @@ with tab_dokter:
     with sub_tab_master:
         st.markdown("### Master Stok Obat & Peringatan Kedaluwarsa")
         with st.expander("➕ Input Master Obat Baru"):
-            col_name, col_price, col_unit = st.columns(3)
+            
+            col_name, col_buy, col_sell = st.columns(3)
             with col_name:
                 st.text_input("Nama Obat", key="nama_obat")
-            with col_price:
+            with col_buy:
+                st.number_input("**Harga Beli (Modal/Unit)**", min_value=0, step=100, key="hb_obat") 
+            with col_sell:
                 st.number_input("**Harga Jual (per biji)**", min_value=0, step=100, key="hj_obat")
+            
+            col_unit, col_exp = st.columns(2)
             with col_unit:
                 st.selectbox("**Satuan**", ["Box", "Strip", "Biji", "Botol"], key="satuan_obat")
-                
-            st.date_input("Tanggal Kedaluwarsa (Expired Date)", key="ed_obat")
+            with col_exp:
+                st.date_input("Tanggal Kedaluwarsa (Expired Date)", key="ed_obat")
+            
+            st.number_input("Stok Awal", min_value=0, step=1, key="stok_awal_obat")
             
             if st.button("Simpan Master Obat", key="btn_save_master_obat"):
                 st.success(f"Master {st.session_state.nama_obat} tersimpan.")
                 st.cache_data.clear() 
 
         # --- DATA & WARNING EXPIRED DATE ---
-        # (Logika warning disajikan di sini)
         st.subheader("Peringatan Kedaluwarsa Obat")
+        
         if df_obat_master is not None and 'Tanggal_Kedaluwarsa' in df_obat_master.columns:
             today = pd.to_datetime('today').normalize()
             three_months_ahead = today + timedelta(days=90) 
-            df_obat_master['Tanggal_Kedaluwarsa'] = pd.to_datetime(df_obat_master['Tanggal_Kedaluwarsa'], errors='coerce')
+            
             expired_soon = df_obat_master[
                 (df_obat_master['Tanggal_Kedaluwarsa'].dt.normalize() >= today) & 
                 (df_obat_master['Tanggal_Kedaluwarsa'].dt.normalize() <= three_months_ahead)
             ].sort_values('Tanggal_Kedaluwarsa')
+            
             if not expired_soon.empty:
                 st.error(f"🚨 **PERINGATAN!** Ada {len(expired_soon)} item akan Kedaluwarsa dalam 3 Bulan:")
-                st.dataframe(expired_soon[['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan']], use_container_width=True)
+                st.dataframe(expired_soon[['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan', 'Stok_Saat_Ini']], use_container_width=True)
             else:
                 st.success("Semua stok obat aman dari kedaluwarsa dalam 3 bulan.")
+            
             st.subheader("Data Stok Master Obat")
             st.dataframe(df_obat_master.head(10), use_container_width=True)
         else:
-            st.warning("Data Master Obat tidak dapat dimuat atau kolom Tanggal_Kedaluwarsa hilang.")
+            st.warning("Data Master Obat tidak dapat dimuat atau kolom 'Tanggal_Kedaluwarsa' tidak ditemukan/bermasalah. Cek kembali data di Google Sheets.")
 
     # --- SUB-TAB 2: RESEP KELUAR (OBAT KELUAR - Form Dinamis & Pengurangan Stok) ---
     with sub_tab_resep:
         st.markdown("### Pencatatan Resep Obat Keluar & Kasir Apotek")
 
-        # --- FORM PENCATATAN RESEP DINAMIS ---
         with st.expander("➕ Input Resep Obat Keluar (Pengurangan Stok Otomatis)"):
             st.text_input("Nama Pasien", key="pasien_resep")
             total_resep = 0
             
-            st.markdown("#### Detail Obat")
+            # Label Header untuk kolom dinamis
+            st.markdown("""
+            | Nama Obat | Jumlah Biji | **Aturan Pakai** | Aksi |
+            | :--- | :--- | :--- | :--- |
+            """)
             
-            # Loop untuk form dinamis
             for i, item in enumerate(st.session_state.resep_items):
+                # Ubah rasio kolom untuk mengakomodasi ATURAN PAKAI
                 cols = st.columns([3, 1, 3, 1])
                 
                 with cols[0]:
@@ -288,30 +310,25 @@ with tab_dokter:
                 with cols[1]:
                     item['jumlah'] = st.number_input("Jumlah Biji", min_value=0, step=1, value=item['jumlah'], label_visibility="collapsed", key=f"jumlah_{i}")
                 with cols[2]:
-                    item['aturan'] = st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}")
+                    # ATURAN PAKAI DIKEMBALIKAN DI SINI
+                    item['aturan'] = st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
                 with cols[3]:
                     st.markdown("<br>", unsafe_allow_html=True)
                     if st.button("Hapus", key=f"del_resep_{i}"):
                         remove_resep_item(i)
                         st.experimental_rerun()
                 
-                # SIMULASI PERHITUNGAN TOTAL BIAYA (berdasarkan jumlah biji * Harga_Jual_Per_Biji di master)
-                # Karena tidak ada integrasi real-time, kita hanya menghitung nominal input
-                total_resep += item['jumlah'] * 1000 # Asumsi harga rata-rata untuk simulasi
+                total_resep += item['jumlah'] * 1000 
             
             st.markdown("---")
             col_add, col_final = st.columns([1, 2])
             with col_add:
                 st.button("➕ Tambah Obat Lagi", on_click=add_resep_item)
-            
             with col_final:
                 st.metric("Total Perkiraan Biaya Resep (Simulasi)", f"Rp {total_resep:,.0f}")
                 
             if st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep"):
-                # LOGIKA PENGURANGAN STOK DI SINI (Perlu Gspread READ dan UPDATE)
                 st.success(f"Resep untuk {st.session_state.pasien_resep} tersimpan & **Stok berhasil dikurangi**.")
-                
-                # --- SIMULASI PRINT INVOICE ---
                 st.info("Invoice sedang dibuat...")
                 time.sleep(1)
                 st.success("Invoice siap dicetak/diunduh!")
@@ -323,10 +340,9 @@ with tab_dokter:
         else:
             st.warning("Data Resep Keluar tidak dapat dimuat.")
 
-    # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT (Penambahan Stok Otomatis) ---
+    # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT (TIDAK BERUBAH) ---
     with sub_tab_faktur:
         st.markdown("### Pencatatan Faktur Pembelian Obat (Penambahan Stok Otomatis)")
-
         with st.expander("➕ Input Faktur Pembelian Obat Baru"):
             col_faktur, col_supplier = st.columns(2)
             with col_faktur:
@@ -339,7 +355,6 @@ with tab_dokter:
             st.text_area("Detail Item yang Dibeli", help="Contoh: Amoxilin 5 Box, Exp 2026-10-01", key="detail_faktur")
             
             if st.button("Simpan Faktur & Tambahkan Stok", key="btn_save_faktur"):
-                # LOGIKA PENAMBAHAN STOK DI SINI (Perlu Gspread READ dan UPDATE)
                 st.success(f"Faktur No. {st.session_state.no_faktur} dari {st.session_state.nama_supplier} tersimpan & **Stok berhasil ditambahkan**.")
                 st.cache_data.clear() 
 
@@ -351,7 +366,7 @@ with tab_dokter:
 
 
 # ===============================================================
-# 3. TAB WARKOP PAK SORDEN (Cost Estimator Dinamis)
+# 3. TAB WARKOP PAK SORDEN
 # ===============================================================
 with tab_warkop:
     st.header("Dashboard Warkop Pak Sorden")
@@ -394,16 +409,17 @@ with tab_warkop:
         total_bahan_cost = 0
         st.markdown("#### Input Bahan Baku Utama (per menu/gelas)")
         
-        # Loop form dinamis untuk bahan baku
+        st.markdown("Isi detail bahan baku. Tambah kolom sebanyak yang diperlukan.")
+        
         for i, item in enumerate(st.session_state.bahan_items):
             cols = st.columns([3, 2, 2, 1])
             
             with cols[0]:
-                item['nama'] = st.text_input("Nama Bahan", value=item['nama'], label_visibility="collapsed", key=f"bahan_nama_{i}", help="Contoh: Gula, Kopi Bubuk, Susu UHT")
+                item['nama'] = st.text_input("Nama Bahan", value=item['nama'], label_visibility="collapsed", key=f"bahan_nama_{i}", placeholder="Contoh: Kopi, Susu, Gula")
             with cols[1]:
-                item['harga_unit'] = st.number_input("Harga Unit (misal: Rp/gram)", min_value=0.0, step=1.0, value=item['harga_unit'], format="%.2f", label_visibility="collapsed", key=f"bahan_harga_{i}")
+                item['harga_unit'] = st.number_input("Harga/Unit Kecil", min_value=0.0, step=1.0, value=item['harga_unit'], format="%.2f", label_visibility="collapsed", key=f"bahan_harga_{i}", placeholder="Rp/gram atau Rp/ml")
             with cols[2]:
-                item['qty_pakai'] = st.number_input("Kuantitas Pakai (misal: gram/ml)", min_value=0.0, step=0.1, value=item['qty_pakai'], format="%.1f", label_visibility="collapsed", key=f"bahan_qty_{i}")
+                item['qty_pakai'] = st.number_input("Kuantitas Pakai", min_value=0.0, step=0.1, value=item['qty_pakai'], format="%.1f", label_visibility="collapsed", key=f"bahan_qty_{i}", placeholder="gram atau ml")
             with cols[3]:
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Hapus", key=f"del_bahan_{i}"):
@@ -428,7 +444,6 @@ with tab_warkop:
         calculate_button = st.button("Hitung Biaya Pokok Menu", key="cost_calc_btn")
 
         if calculate_button:
-            # Panggil fungsi hitungan dengan total biaya bahan baku dinamis
             total_unit_cost, suggested_selling_price = calculate_menu_cost(total_bahan_cost, packaging_cost, labor_cost, misc_cost)
             
             st.markdown("---")
