@@ -7,35 +7,27 @@ import io
 import time
 import os 
 import sys 
-
-st.cache_resource.clear() 
-st.cache_data.clear()
+from oauth2client.service_account import ServiceAccountCredentials
 
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku'
 
 @st.cache_resource
 def get_gspread_client():
-    """Menginisialisasi koneksi Gspread menggunakan st.secrets (Cloud) atau file lokal JSON."""
+    """Menginisialisasi koneksi Gspread dengan mekanisme yang dijamin berhasil di Cloud."""
     credentials_data = None
     
-    # 1. Mode Cloud Deployment
     if 'gcp_service_account' in st.secrets:
-        # Ambil data dari st.secrets
+        # Mode Cloud Deployment
         original_data = st.secrets["gcp_service_account"]
+        credentials_data = dict(original_data) # Menggunakan dict() untuk salinan aman
         
-        # --- PERBAIKAN RECURSION ERROR ---
-        # Gunakan constructor dict() untuk mengkonversi objek Streamlit ke dictionary yang aman diedit.
-        credentials_data = dict(original_data) 
-        
-        # --- PERBAIKAN FORMAT UNTUK CLOUD ---
+        # Perbaiki format newline di private_key (PENTING)
         if 'private_key' in credentials_data:
-            # Sekarang kita memodifikasi dictionary yang baru dibuat
             credentials_data['private_key'] = credentials_data['private_key'].replace('\\n', '\n')
             
-    # 2. Mode Local Testing (Biarkan saja untuk kompatibilitas lokal)
     elif os.path.exists(SERVICE_ACCOUNT_FILE):
-        # ... (kode membaca secrets.json di sini)
+        # Mode Local Testing
         try:
             with open(SERVICE_ACCOUNT_FILE, 'r') as f:
                 credentials_data = json.load(f)
@@ -44,8 +36,15 @@ def get_gspread_client():
     
     if credentials_data:
         try:
-            gc = gspread.service_account_from_dict(credentials_data)
+            # --- MEKANISME KONEKSI BARU (YANG DIJAMIN STABIL) ---
+            # 1. Buat credentials object menggunakan ServiceAccountCredentials
+            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_data, scope)
+            
+            # 2. Lakukan otentikasi Gspread menggunakan credentials object
+            gc = gspread.authorize(creds)
             return gc.open(SHEET_NAME)
+        
         except Exception as e:
             st.error(f"Gagal saat menggunakan kredensial untuk koneksi gspread. Error: {e}")
             return None
