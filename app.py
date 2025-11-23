@@ -7,6 +7,7 @@ import io
 import time
 import os 
 import sys 
+import copy
 
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku'
@@ -19,27 +20,28 @@ def get_gspread_client():
     
     # 1. Mode Cloud Deployment
     if 'gcp_service_account' in st.secrets:
-        # Ambil data dari st.secrets, yang sudah berupa dictionary
-        credentials_data = st.secrets["gcp_service_account"]
+        # Ambil data dari st.secrets
+        original_data = st.secrets["gcp_service_account"]
         
-        # --- PERBAIKAN KRUSIAL UNTUK CLOUD ---
-        # gspread.service_account_from_dict() membutuhkan private_key dengan karakter \n yang benar.
-        # Streamlit (TOML) kadang salah menginterpretasi, jadi kita perbaiki secara eksplisit.
+        # BARIS KRUSIAL: Buat salinan agar tidak melanggar aturan Read-Only Streamlit
+        credentials_data = original_data.copy() 
+        
+        # --- PERBAIKAN FORMAT UNTUK CLOUD ---
         if 'private_key' in credentials_data:
-            # Mengganti string literal '\n' menjadi karakter newline yang sesungguhnya
+            # Sekarang kita bisa memodifikasi salinan ini
             credentials_data['private_key'] = credentials_data['private_key'].replace('\\n', '\n')
-
-    # 2. Mode Local Testing (Biarkan saja, tapi fokus utamanya di atas)
+            
+    # 2. Mode Local Testing (Biarkan saja untuk kompatibilitas lokal)
     elif os.path.exists(SERVICE_ACCOUNT_FILE):
+        # ... (kode membaca secrets.json di sini)
         try:
             with open(SERVICE_ACCOUNT_FILE, 'r') as f:
                 credentials_data = json.load(f)
         except Exception:
-            pass
+            pass # Asumsi kode sebelumnya sudah ada
     
     if credentials_data:
         try:
-            # Baris ini sekarang seharusnya berfungsi karena private_key sudah diperbaiki
             gc = gspread.service_account_from_dict(credentials_data)
             return gc.open(SHEET_NAME)
         except Exception as e:
@@ -48,6 +50,7 @@ def get_gspread_client():
     else:
         st.error("Gagal menemukan kredensial. Pastikan secrets.toml sudah dikonfigurasi di Streamlit Cloud.")
         return None
+
 
 @st.cache_data(ttl=5) 
 def load_data(sheet_name):
