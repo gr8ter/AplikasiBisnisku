@@ -12,6 +12,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku'
 
+# Hapus import copy jika masih ada
+
 @st.cache_resource
 def get_gspread_client():
     """Menginisialisasi koneksi Gspread dengan mekanisme yang dijamin berhasil di Cloud."""
@@ -20,14 +22,15 @@ def get_gspread_client():
     if 'gcp_service_account' in st.secrets:
         # Mode Cloud Deployment
         original_data = st.secrets["gcp_service_account"]
-        credentials_data = dict(original_data) # Menggunakan dict() untuk salinan aman
+        credentials_data = dict(original_data) 
         
-        # Perbaiki format newline di private_key (PENTING)
-        if 'private_key' in credentials_data:
-            credentials_data['private_key'] = credentials_data['private_key'].replace('\\n', '\n')
+        # HAPUS BARIS INI: if 'private_key' in credentials_data:
+        # HAPUS BARIS INI:     credentials_data['private_key'] = credentials_data['private_key'].replace('\\n', '\n')
             
     elif os.path.exists(SERVICE_ACCOUNT_FILE):
         # Mode Local Testing
+        # ... (kode membaca secrets.json di sini)
+        # ...
         try:
             with open(SERVICE_ACCOUNT_FILE, 'r') as f:
                 credentials_data = json.load(f)
@@ -36,12 +39,11 @@ def get_gspread_client():
     
     if credentials_data:
         try:
-            # --- MEKANISME KONEKSI BARU (YANG DIJAMIN STABIL) ---
-            # 1. Buat credentials object menggunakan ServiceAccountCredentials
+            # Tetap gunakan oauth2client karena ini adalah metode paling stabil
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+            # PASTIKAN SEMUA VARIABEL KREDENSIAL DIBERIKAN DI SINI
             creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_data, scope)
             
-            # 2. Lakukan otentikasi Gspread menggunakan credentials object
             gc = gspread.authorize(creds)
             return gc.open(SHEET_NAME)
         
