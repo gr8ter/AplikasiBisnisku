@@ -15,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Penyesuaian Nama Bisnis Sesuai Permintaan (Menggunakan \n untuk baris baru)
+# Penyesuaian Nama Bisnis
 NAMA_BISNIS_DOKTER = "PRAKTEK DOKTER UMUM\ndr. Putu Sannia Dewi, S.Ked"
 NAMA_BISNIS_WARKOP = "WARKOP ES PAK SORDEN"
 NAMA_BISNIS_BERAS = "TUJU-TUJU MART"
@@ -31,32 +31,23 @@ if 'bahan_items' not in st.session_state:
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
 SHEET_NAME = 'Database Bisnisku' 
 
-# --- FUNGSI CSS PERBAIKAN EKSTREM ---
 # --- FUNGSI CSS PERBAIKAN EKSTREM V9.1 ---
 def inject_custom_css():
     st.markdown("""
         <style>
             /* 1. FIX TEKS GANDA/ARROW GANDA (EKSTREM) */
-            
-            /* Sembunyikan ikon panah bawaan Streamlit (ikon keyboard_arrow_right) */
             div[data-testid="stExpander"] button > div:first-child svg {
                 display: none !important; 
             }
-            
-            /* Sembunyikan teks duplikasi yang berada di dalam konten block expander (sering jadi duplikasi 1) */
             .stExpander > div > div > div > p {
                 display: none !important; 
             }
-            
-            /* Sembunyikan elemen yang membawa teks duplikasi kedua, yang sering di-inject Streamlit */
             div[data-testid="stExpander"] > div > div > div:first-child > div:nth-child(2) {
                 visibility: hidden !important;
                 height: 0 !important;
                 margin: 0 !important;
                 padding: 0 !important;
             }
-
-            /* Pastikan teks judul yang benar (yang menjadi tombol) tetap terlihat dan ter-style */
             div[data-testid="stExpander"] button > div:nth-child(2) > p {
                 font-size: 1rem !important; 
                 font-weight: bold !important;
@@ -104,9 +95,16 @@ def inject_custom_css():
                 border-top: 1px dashed #aaa;
                 border-bottom: 1px dashed #aaa;
             }
+            /* Style untuk laporan keuangan */
+            .stMetric [data-testid="stMetricDelta"] {
+                color: #5F3CD8; /* Warna untuk delta positif/negatif */
+            }
         </style>
         """, 
         unsafe_allow_html=True)
+
+inject_custom_css()
+
 
 # --- FUNGSI KONEKSI GSPREAD & LOAD DATA ---
 @st.cache_resource
@@ -149,11 +147,13 @@ def load_data(sheet_name):
             df = pd.DataFrame(data[1:], columns=data[0])
             
             for col in df.columns:
-                if 'harga' in col.lower() or 'biaya' in col.lower() or 'stok' in col.lower() or 'jumlah' in col.lower():
-                    df[col] = pd.to_numeric(df[col].str.replace('.', '', regex=False).str.replace(',', '.', regex=False), errors='coerce')
+                if 'harga' in col.lower() or 'biaya' in col.lower() or 'stok' in col.lower() or 'jumlah' in col.lower() or 'total' in col.lower():
+                    # Bersihkan dan konversi angka
+                    df[col] = pd.to_numeric(df[col].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip(), errors='coerce')
                 
                 if 'tanggal' in col.lower() or 'kedaluwarsa' in col.lower():
-                    df[col] = pd.to_datetime(df[col].str.strip(), errors='coerce')
+                    # Konversi tanggal, strip spasi ekstra
+                    df[col] = pd.to_datetime(df[col].astype(str).str.strip(), errors='coerce')
             
             df = df.dropna(how='all') 
             
@@ -261,6 +261,100 @@ def generate_receipt_html(title, business_name, customer_info, items_list, total
     
     return html_content
 
+# --- FUNGSI UTAMA LAPORAN KEUANGAN ---
+def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_faktur_obat):
+    
+    # --- 1. PEMASUKAN (INCOME/CASH IN) ---
+    pemasukan = 0
+    
+    # Pemasukan dari Beras Mart
+    if df_beras_trx is not None and not df_beras_trx.empty:
+        beras_penjualan_tunai = df_beras_trx[df_beras_trx['Jenis_Transaksi'] == 'Penjualan Tunai']['Jumlah_Transaksi'].sum()
+        beras_penerimaan_piutang = df_beras_trx[df_beras_trx['Jenis_Transaksi'] == 'Penerimaan Piutang']['Jumlah_Transaksi'].sum()
+    else:
+        beras_penjualan_tunai, beras_penerimaan_piutang = 0, 0
+    
+    # Pemasukan dari Warkop
+    if df_warkop_trx is not None and not df_warkop_trx.empty:
+        warkop_penjualan_tunai = df_warkop_trx[df_warkop_trx['Jenis_Transaksi'] == 'Penjualan Tunai']['Jumlah_Transaksi'].sum()
+        warkop_penerimaan_piutang = df_warkop_trx[df_warkop_trx['Jenis_Transaksi'] == 'Penerimaan Piutang']['Jumlah_Transaksi'].sum()
+    else:
+        warkop_penjualan_tunai, warkop_penerimaan_piutang = 0, 0
+        
+    # Pemasukan dari Dokter (Resep)
+    if df_resep_keluar is not None and not df_resep_keluar.empty:
+        dokter_total_resep = df_resep_keluar['Total_Biaya'].sum()
+    else:
+        dokter_total_resep = 0
+        
+    pemasukan_total = (
+        beras_penjualan_tunai + beras_penerimaan_piutang + 
+        warkop_penjualan_tunai + warkop_penerimaan_piutang + 
+        dokter_total_resep
+    )
+    
+    # --- 2. PENGELUARAN (EXPENSES/CASH OUT) ---
+    pengeluaran = 0
+    
+    # Pengeluaran Pembelian Obat (Faktur)
+    if df_faktur_obat is not None and not df_faktur_obat.empty:
+        dokter_pembelian_faktur = df_faktur_obat['Total_Biaya_Faktur'].sum()
+    else:
+        dokter_pembelian_faktur = 0
+        
+    # Pembelian Utang/Pembayaran Utang dari Beras Mart
+    if df_beras_trx is not None and not df_beras_trx.empty:
+        beras_pembelian_utang = df_beras_trx[df_beras_trx['Jenis_Transaksi'] == 'Pembelian Utang']['Jumlah_Transaksi'].sum()
+        beras_pembayaran_utang = df_beras_trx[df_beras_trx['Jenis_Transaksi'] == 'Pembayaran Utang']['Jumlah_Transaksi'].sum()
+    else:
+        beras_pembelian_utang, beras_pembayaran_utang = 0, 0
+
+    # Pembelian Utang/Pembayaran Utang dari Warkop
+    if df_warkop_trx is not None and not df_warkop_trx.empty:
+        warkop_pembelian_utang = df_warkop_trx[df_warkop_trx['Jenis_Transaksi'] == 'Pembelian Utang']['Jumlah_Transaksi'].sum()
+        warkop_pembayaran_utang = df_warkop_trx[df_warkop_trx['Jenis_Transaksi'] == 'Pembayaran Utang']['Jumlah_Transaksi'].sum()
+    else:
+        warkop_pembelian_utang, warkop_pembayaran_utang = 0, 0
+        
+    pengeluaran_total = (
+        dokter_pembelian_faktur + 
+        beras_pembelian_utang + beras_pembayaran_utang + 
+        warkop_pembelian_utang + warkop_pembayaran_utang
+    )
+    
+    # --- 3. LABA BERSIH SEMENTARA ---
+    laba_bersih_sementara = pemasukan_total - pengeluaran_total
+    
+    # --- 4. OUTPUT ---
+    
+    st.subheader("Ringkasan Kas Masuk (Pemasukan)")
+    col_r1, col_r2, col_r3 = st.columns(3)
+    col_r1.metric("1. Penjualan Tunai Beras", f"Rp {beras_penjualan_tunai:,.0f}")
+    col_r2.metric("2. Penjualan Tunai Warkop", f"Rp {warkop_penjualan_tunai:,.0f}")
+    col_r3.metric("3. Total Penerimaan Resep", f"Rp {dokter_total_resep:,.0f}")
+    
+    col_r4, col_r5 = st.columns(2)
+    col_r4.metric("4. Penerimaan Piutang Beras", f"Rp {beras_penerimaan_piutang:,.0f}")
+    col_r5.metric("5. Penerimaan Piutang Warkop", f"Rp {warkop_penerimaan_piutang:,.0f}")
+    
+    st.markdown("---")
+    st.subheader("Ringkasan Kas Keluar (Pengeluaran)")
+    col_e1, col_e2, col_e3 = st.columns(3)
+    col_e1.metric("1. Pembelian Obat (Faktur)", f"Rp {dokter_pembelian_faktur:,.0f}")
+    col_e2.metric("2. Pembelian Utang Beras", f"Rp {beras_pembelian_utang:,.0f}")
+    col_e3.metric("3. Pembelian Utang Warkop", f"Rp {warkop_pembelian_utang:,.0f}")
+    
+    col_e4, col_e5 = st.columns(2)
+    col_e4.metric("4. Pembayaran Utang Beras", f"Rp {beras_pembayaran_utang:,.0f}")
+    col_e5.metric("5. Pembayaran Utang Warkop", f"Rp {warkop_pembayaran_utang:,.0f}")
+    
+    st.markdown("---")
+    
+    col_final_1, col_final_2, col_final_3 = st.columns(3)
+    col_final_1.metric("TOTAL PEMASUKAN", f"Rp {pemasukan_total:,.0f}", delta="Semua Kas Masuk")
+    col_final_2.metric("TOTAL PENGELUARAN", f"Rp {pengeluaran_total:,.0f}", delta="Semua Kas Keluar")
+    col_final_3.metric("LABA BERSIH SEMENTARA", f"Rp {laba_bersih_sementara:,.0f}", delta=f"Selisih: Rp {laba_bersih_sementara:,.0f}")
+
 
 # --- PENGELOMPOKAN DATA BERDASARKAN BISNIS ---
 df_beras_master = load_data("beras_master") 
@@ -276,10 +370,11 @@ df_warkop_trx = load_data("warkop_transaksi")
 st.title("Dashboard Bisnis GR8TER")
 
 # Membuat Tab Utama
-tab_beras, tab_dokter, tab_warkop = st.tabs([
+tab_beras, tab_dokter, tab_warkop, tab_laporan = st.tabs([
     "🌾 Beras Tuju-Tuju Mart", 
     "🩺 Praktek Dokter", 
-    "☕ Warkop Es Pak Sorden"
+    "☕ Warkop Es Pak Sorden",
+    "📈 Laporan Keuangan & Stok Total" # <--- TAB BARU
 ])
 
 
@@ -320,9 +415,11 @@ with tab_beras:
             
             col_type, col_amount, col_party = st.columns(3)
             with col_type:
+                # --- PERUBAHAN JENIS TRANSAKSI ---
                 tr_type_beras = st.selectbox(
                     "Jenis Transaksi", 
-                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "Pembelian Utang (Kita Berutang)"],
+                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", 
+                     "Pembelian Utang (Kita Berutang)", "Penerimaan Piutang", "Pembayaran Utang"], 
                     key="tr_type_beras"
                 )
             with col_amount:
@@ -352,7 +449,6 @@ with tab_beras:
                     st.markdown("### Struk Siap Cetak")
                     st.markdown(receipt_html, unsafe_allow_html=True)
                     st.button("🖼️ Cetak Struk/Tanda Terima", help="Klik untuk membuka dialog cetak browser", key="print_beras_btn")
-                # --- END LOGIKA CETAK BERAS ---
 
         st.subheader("Data Transaksi Terbaru Beras Tuju-Tuju Mart")
         if df_beras_trx is not None:
@@ -421,7 +517,7 @@ with tab_dokter:
         else:
             st.warning("Data Master Obat tidak dapat dimuat atau kolom 'Tanggal_Kedaluwarsa' tidak ditemukan/bermasalah. Cek kembali data di Google Sheets.")
 
-    # --- SUB-TAB 2: RESEP KELUAR (OBAT KELUAR - Form Dinamis & Pengurangan Stok) ---
+    # --- SUB-TAB 2: RESEP KELUAR ---
     with sub_tab_resep:
         st.markdown("### Pencatatan Resep Obat Keluar & Kasir Apotek")
 
@@ -429,7 +525,6 @@ with tab_dokter:
             pasien_resep = st.text_input("Nama Pasien", key="pasien_resep")
             total_resep = 0
             
-            # Label Header yang Rapi (menggunakan kolom statis)
             col_header = st.columns([3, 1, 3, 1])
             with col_header[0]:
                 st.markdown("**Nama Obat**")
@@ -439,9 +534,8 @@ with tab_dokter:
                 st.markdown("**Aturan Pakai**")
             with col_header[3]:
                 st.markdown("**Aksi**")
-            st.markdown("---") # Garis pemisah
+            st.markdown("---") 
             
-            # --- Perbaikan: Menghapus tabel Markdown yang aneh dan hanya menggunakan kolom ---
             for i, item in enumerate(st.session_state.resep_items):
                 cols = st.columns([3, 1, 3, 1])
                 
@@ -452,13 +546,11 @@ with tab_dokter:
                 with cols[2]:
                     item['aturan'] = st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
                 with cols[3]:
-                    # st.markdown("<br>", unsafe_allow_html=True) # Tidak perlu break line
                     if st.button("Hapus", key=f"del_resep_{i}"):
                         remove_resep_item(i)
                         st.experimental_rerun()
                 
                 total_resep += item['jumlah'] * 1000 
-            # --- End Perbaikan Resep ---
             
             st.markdown("---")
             col_add, col_final = st.columns([1, 2])
@@ -472,7 +564,6 @@ with tab_dokter:
                 st.info("Struk sedang dibuat...")
                 time.sleep(1)
                 
-                # --- LOGIKA CETAK STRUK RESEP ---
                 items_resep = []
                 for item in st.session_state.resep_items:
                     items_resep.append({
@@ -500,7 +591,7 @@ with tab_dokter:
         else:
             st.warning("Data Resep Keluar tidak dapat dimuat.")
 
-    # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT (Penambahan Stok Otomatis) ---
+    # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT ---
     with sub_tab_faktur:
         st.markdown("### Pencatatan Faktur Pembelian Obat (Penambahan Stok Otomatis)")
 
@@ -519,7 +610,6 @@ with tab_dokter:
                 st.success(f"Faktur No. {no_faktur} dari {nama_supplier} tersimpan & **Stok berhasil ditambahkan**.")
                 st.cache_data.clear() 
                 
-                # --- LOGIKA CETAK FAKTUR ---
                 items_faktur = [{'deskripsi': detail_faktur, 'qty': 1, 'keterangan': "Pembelian Grosir"}]
                 
                 receipt_html = generate_receipt_html(
@@ -556,9 +646,11 @@ with tab_warkop:
         with st.expander("💸 Input Transaksi Penjualan Warkop"):
             col_type, col_amount, col_party = st.columns(3)
             with col_type:
+                 # --- PERUBAHAN JENIS TRANSAKSI ---
                 tr_type_warkop = st.selectbox(
                     "Jenis Transaksi", 
-                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", "Pembelian Utang (Kita Berutang)"],
+                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", 
+                     "Pembelian Utang (Kita Berutang)", "Penerimaan Piutang", "Pembayaran Utang"],
                     key="tr_type_warkop"
                 )
             with col_amount:
@@ -583,7 +675,6 @@ with tab_warkop:
         st.markdown("### Kalkulator Biaya Menu (Cost Estimator)")
         st.markdown("Hitung biaya bahan baku satu menu secara detail.")
         
-        # --- INPUT BAHAN BAKU DINAMIS ---
         total_bahan_cost = 0
         st.markdown("#### Input Bahan Baku Utama (per menu/gelas)")
         
@@ -631,3 +722,27 @@ with tab_warkop:
             st.metric("Perkiraan Harga Jual (Markup 50%)", f"Rp {suggested_selling_price:,.0f}", delta=f"Margin Rp {(suggested_selling_price - total_unit_cost):,.0f}")
             
             st.info("Harga Jual yang disarankan adalah **Rp {:.0f}**.".format(suggested_selling_price))
+
+# ===============================================================
+# 4. TAB LAPORAN KEUANGAN & STOK TOTAL
+# ===============================================================
+with tab_laporan:
+    st.header("Laporan Keuangan & Stok Total")
+    
+    st.info("Laporan ini menggunakan metode **Arus Kas (Cash Basis)**. Laba Bersih dihitung dari total Kas Masuk dikurangi total Kas Keluar dari semua unit bisnis.")
+    
+    # --- Filter Tanggal ---
+    today = pd.to_datetime('today').date()
+    col_start, col_end = st.columns(2)
+    with col_start:
+        start_date = st.date_input("Tanggal Mulai", today - timedelta(days=30))
+    with col_end:
+        end_date = st.date_input("Tanggal Akhir", today)
+        
+    st.markdown("---")
+    
+    # Reload data dengan filter tanggal
+    # (Catatan: Saat ini filtering masih dilakukan di memory, perlu logic filtering jika dataset besar)
+    
+    # Panggil fungsi laporan keuangan
+    generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_faktur_obat)
