@@ -107,7 +107,7 @@ def get_gspread_client():
         st.error("Gagal menemukan kredensial. Pastikan file secrets.json ada atau environment variable telah diset.")
         return None
 
-@st.cache_data(ttl=5) 
+@st.cache_data(ttl=3600) 
 def load_data(sheet_name):
     sh = get_gspread_client()
     if sh:
