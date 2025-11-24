@@ -33,9 +33,9 @@ if 'ongkos_cost' not in st.session_state:
 if 'operasional_cost' not in st.session_state:
     st.session_state.operasional_cost = 0
 
-# Tambahkan Flag Rerun
-if 'rerun_needed' not in st.session_state:
-    st.session_state.rerun_needed = False
+# Hapus Flag Rerun (Tidak digunakan lagi)
+if 'rerun_needed' in st.session_state:
+    del st.session_state['rerun_needed']
 
 
 # Kunci yang digunakan untuk koneksi gspread
@@ -320,7 +320,6 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
         return False
 
 # --- FUNGSI LOGIKA UNTUK RESET FORM INPUT ---
-# PERBAIKAN: Menghapus st.experimental_rerun() dari sini
 def clear_form_inputs(keys):
     """Mengosongkan input form setelah save sukses."""
     for key in keys:
@@ -516,12 +515,13 @@ with tab_beras:
             with col_stock:
                 stok_beras_master = st.number_input("Stok Awal (Zak)", min_value=0, step=1, key="stok_beras_master")
             
-            # PERBAIKAN LOGIKA RERUN: Set flag instead of calling st.experimental_rerun()
+            # PERBAIKAN LOGIKA RERUN: Hapus RERUN sama sekali, hanya mengandalkan clear_form_inputs
             def handle_save_master_beras():
                 data = {'nama_beras_master': st.session_state.nama_beras_master, 'hb_beras': st.session_state.hb_beras, 'hj_beras_master': st.session_state.hj_beras_master, 'stok_beras_master': st.session_state.stok_beras_master}
                 if save_data("beras_master", data):
-                    clear_form_inputs(['nama_beras_master', 'hb_beras', 'hj_beras_master', 'stok_beras_master'])
-                    st.session_state.rerun_needed = True # Set flag
+                    # Cukup hapus session state agar form kosong di next run/interaksi
+                    clear_form_inputs(['nama_beras_master', 'hb_beras', 'hj_beras_master', 'stok_beras_master']) 
+                    # st.experimental_rerun() TIDAK DIPANGGIL
 
             if st.button("Simpan Master Beras", key="btn_save_master_beras", on_click=handle_save_master_beras):
                 pass 
@@ -578,7 +578,7 @@ with tab_beras:
                 }
                 if save_data("beras_transaksi", data):
                     clear_form_inputs(['tr_date_beras', 'tr_type_beras', 'tr_product_beras', 'tr_amount_beras', 'tr_party_beras', 'catatan_beras'])
-                    st.session_state.rerun_needed = True
+                    # st.experimental_rerun() TIDAK DIPANGGIL
 
             if st.button("Simpan Transaksi Kasir", key="btn_save_transaksi_beras", on_click=handle_save_transaksi_beras):
                 pass
@@ -627,7 +627,7 @@ with tab_dokter:
                 data = {'nama_obat': st.session_state.nama_obat, 'hb_obat': st.session_state.hb_obat, 'hj_obat': st.session_state.hj_obat, 'satuan_obat': st.session_state.satuan_obat, 'ed_obat': st.session_state.ed_obat, 'stok_awal_obat': st.session_state.stok_awal_obat}
                 if save_data("master_obat", data):
                     clear_form_inputs(['nama_obat', 'hb_obat', 'hj_obat', 'satuan_obat', 'ed_obat', 'stok_awal_obat'])
-                    st.session_state.rerun_needed = True
+                    # st.experimental_rerun() TIDAK DIPANGGIL
 
             if st.button("Simpan Master Obat", key="btn_save_master_obat", on_click=handle_save_master_obat_dokter):
                 pass 
@@ -703,7 +703,7 @@ with tab_dokter:
                     st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
                 with cols[3]:
                     if st.button("Hapus", key=f"del_resep_{i}", on_click=lambda i=i: remove_resep_item(i)):
-                        st.session_state.rerun_needed = True # Set flag
+                        pass # Tidak memanggil rerun di sini
                 
                 # Update item['jumlah'] dan item['aturan'] dari session state
                 st.session_state.resep_items[i]['jumlah'] = st.session_state.get(f"jumlah_{i}", 0)
@@ -716,7 +716,7 @@ with tab_dokter:
             col_add, col_final = st.columns([1, 2])
             with col_add:
                 if st.button("➕ Tambah Obat Lagi", on_click=add_resep_item):
-                    st.session_state.rerun_needed = True # Set flag
+                    pass # Tidak memanggil rerun di sini
             with col_final:
                 st.metric("Total Biaya Resep", f"Rp {total_resep:,.0f}")
                 
@@ -724,7 +724,7 @@ with tab_dokter:
                 df_obat_master_latest = load_data("master_obat")
                 if save_resep_and_update_stock(st.session_state.pasien_resep, st.session_state.resep_items, df_obat_master_latest):
                     clear_form_inputs(['pasien_resep', 'resep_items'])
-                    st.session_state.rerun_needed = True
+                    # st.experimental_rerun() TIDAK DIPANGGIL
 
             if st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep", on_click=handle_save_resep):
                 pass
@@ -756,7 +756,7 @@ with tab_dokter:
                 st.success(f"Faktur No. {st.session_state.no_faktur} dari {st.session_state.nama_supplier} tersimpan (Simulasi penambahan stok berhasil).")
                 st.cache_data.clear() 
                 clear_form_inputs(['no_faktur', 'nama_supplier', 'tgl_beli', 'total_faktur', 'detail_faktur'])
-                st.session_state.rerun_needed = True
+                # st.experimental_rerun() TIDAK DIPANGGIL
                 
             if st.button("Simpan Faktur & Tambahkan Stok", key="btn_save_faktur", on_click=handle_save_faktur):
                 pass
@@ -809,7 +809,7 @@ with tab_warkop:
                 }
                 if save_data("warkop_transaksi", data):
                     clear_form_inputs(['tr_date_warkop', 'tr_type_warkop', 'tr_amount_warkop', 'tr_party_warkop', 'catatan_warkop'])
-                    st.session_state.rerun_needed = True
+                    # st.experimental_rerun() TIDAK DIPANGGIL
             
             if st.button("Simpan Transaksi", key="btn_save_transaksi_warkop", on_click=handle_save_transaksi_warkop):
                 pass
@@ -868,10 +868,10 @@ with tab_warkop:
         col_add, col_del, col_total_bahan = st.columns([1, 1, 2])
         with col_add:
             if st.button("➕ Tambah Bahan", on_click=add_bahan_item):
-                 st.session_state.rerun_needed = True # Set flag
+                 pass # Tidak memanggil rerun di sini
         with col_del:
             if st.button("Hapus Bahan Terakhir", on_click=lambda: remove_bahan_item(len(st.session_state.bahan_items) - 1)):
-                 st.session_state.rerun_needed = True # Set flag
+                 pass # Tidak memanggil rerun di sini
         
         with col_total_bahan:
             st.metric("Total Biaya Bahan Baku", f"Rp {total_hpp_bahan:,.0f}")
@@ -910,7 +910,7 @@ with tab_warkop:
             
         def handle_reset_kalkulator():
             clear_form_inputs(['menu_name_warkop', 'bahan_items', 'reset_warkop_cost'])
-            st.session_state.rerun_needed = True
+            # st.experimental_rerun() TIDAK DIPANGGIL
 
         if st.button("Reset Kalkulator", key="btn_reset_kalkulator", on_click=handle_reset_kalkulator):
             pass
@@ -937,10 +937,7 @@ with tab_laporan:
     # Panggil fungsi laporan keuangan
     generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_faktur_obat)
 
-
-# ===============================================================
-# FINAL RERUN CHECK (DILUAR SEMUA FUNGSI DAN WIDGET)
-# ===============================================================
-if st.session_state.rerun_needed:
-    st.session_state.rerun_needed = False # Reset flag
-    st.experimental_rerun()
+# HAPUS BAGIAN INI (tempat error terakhir)
+# if st.session_state.rerun_needed:
+#     st.session_state.rerun_needed = False # Reset flag
+#     st.experimental_rerun()
