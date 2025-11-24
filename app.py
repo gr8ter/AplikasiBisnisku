@@ -25,7 +25,15 @@ NAMA_BISNIS_BERAS = "TUJU-TUJU MART"
 if 'resep_items' not in st.session_state:
     st.session_state.resep_items = [{'obat': '', 'jumlah': 0, 'aturan': '', 'harga': 0.0}] 
 if 'bahan_items' not in st.session_state:
-    st.session_state.bahan_items = [{'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0}] 
+    # Ditambahkan 'biaya' untuk kalkulator warkop
+    st.session_state.bahan_items = [{'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0, 'satuan': '', 'biaya': 0.0}] 
+if 'kemasan_cost' not in st.session_state:
+    st.session_state.kemasan_cost = 0
+if 'ongkos_cost' not in st.session_state:
+    st.session_state.ongkos_cost = 0
+if 'operasional_cost' not in st.session_state:
+    st.session_state.operasional_cost = 0
+
 
 # Kunci yang digunakan untuk koneksi gspread
 SERVICE_ACCOUNT_FILE = '.streamlit/secrets.json' 
@@ -35,27 +43,22 @@ SHEET_NAME = 'Database Bisnisku'
 def inject_custom_css():
     st.markdown("""
         <style>
-            /* 1. FIX TEKS GANDA/ARROW GANDA (ULTRA-EKSTREM) */
-            div[data-testid="stExpander"] button > div:not(:last-child) > div > p,
-            div[data-testid="stExpander"] button > div:first-child > svg,
-            div[data-testid="stExpander"] > div > div > div > p {
-                display: none !important; 
-                visibility: hidden !important; 
-            }
-            div[data-testid="stExpander"] button > div:last-child > p {
-                font-size: 1rem !important; 
-                font-weight: bold !important;
-                color: #5F3CD8 !important; 
-            }
-            
             /* 2. Styling Lanjutan */
             html, body, [class*="st-"] { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
             .stSidebar { background-color: #E0F2F1; }
+            
+            /* MEMASTIKAN WARNA TOMBOL ADALAH PUTIH */
             .stButton>button {
-                background-color: #7350F2; color: white; border-radius: 12px; border: none;
-                padding: 10px 20px; transition: 0.3s;
+                background-color: #7350F2; 
+                color: white !important; 
+                border-radius: 12px; 
+                border: none;
+                padding: 10px 20px; 
+                transition: 0.3s;
+                font-weight: bold;
             }
             .stButton>button:hover { background-color: #5F3CD8; }
+            
             .stTextInput>div>div>input, .stNumberInput>div>div>input, .stSelectbox>div>div {
                 border-radius: 8px; border: 1px solid #7350F2; padding: 8px;
             }
@@ -66,6 +69,8 @@ def inject_custom_css():
             .stMetric [data-testid="stMetricDelta"] {
                 color: #5F3CD8;
             }
+            /* Styling untuk container input Master/Form */
+            .stContainer { border-radius: 10px; border: 1px solid #7350F2; padding: 20px; margin-bottom: 20px; }
         </style>
         """, 
         unsafe_allow_html=True)
@@ -114,12 +119,12 @@ def load_data(sheet_name):
             df = pd.DataFrame(data[1:], columns=data[0])
             
             for col in df.columns:
-                if 'harga' in col.lower() or 'biaya' in col.lower() or 'stok' in col.lower() or 'jumlah' in col.lower() or 'total' in col.lower():
+                if 'harga' in col.lower() or 'biaya' in col.lower() or 'stok' in col.lower() or 'jumlah' in col.lower() or 'total' in col.lower() or 'modal' in col.lower() or 'beli' in col.lower():
                     # Bersihkan dan konversi angka
                     cleaned_col = df[col].astype(str).str.replace(',', 'TEMP', regex=False).str.replace('.', '', regex=False).str.replace('TEMP', '.', regex=False).str.strip()
                     df[col] = pd.to_numeric(cleaned_col, errors='coerce')
                 
-                if 'tanggal' in col.lower() or 'kedaluwarsa' in col.lower():
+                if 'tanggal' in col.lower() or 'kedaluwarsa' in col.lower() or 'ed' in col.lower():
                     # Konversi tanggal
                     df[col] = pd.to_datetime(df[col].astype(str).str.strip(), errors='coerce')
             
@@ -154,7 +159,13 @@ def update_sheet_cell(sheet_name, row_index, col_name, new_value):
         # Penyesuaian index: row_index dari df (0-based) + 2 (karena header di baris 1)
         sheet_row_index = row_index + 2 
         
-        worksheet.update_cell(sheet_row_index, col_index, new_value)
+        # Format nilai sebelum update ke sheets
+        value_to_update = new_value
+        if isinstance(new_value, (int, float)):
+             # Format angka tanpa ribuan, gspread akan menginterpretasikannya sebagai float/int
+             value_to_update = str(round(new_value))
+             
+        worksheet.update_cell(sheet_row_index, col_index, value_to_update)
         
         return True
     except Exception as e:
@@ -183,6 +194,8 @@ def save_data(sheet_name, data_dict):
             data_dict['tr_catatan_beras']
         ]
     elif sheet_name == "master_obat":
+        # Pastikan format data match dengan kolom di sheet
+        # [Nama_Obat, Harga_Beli, Harga_Jual, Satuan, Tanggal_Kedaluwarsa, Stok_Saat_Ini]
         row_to_append = [data_dict['nama_obat'], data_dict['hb_obat'], data_dict['hj_obat'], data_dict['satuan_obat'], data_dict['ed_obat'].strftime('%Y-%m-%d'), data_dict['stok_awal_obat']]
     elif sheet_name == "warkop_transaksi":
          # URUTAN: [Tanggal_Transaksi, Jenis_Transaksi, Jumlah_Transaksi, Pihak_Terkait, Catatan]
@@ -214,7 +227,6 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
         st.error("Nama Pasien wajib diisi.")
         return False
     
-    # Pengecekan krusial untuk mencegah crash
     required_cols = ['Nama_Obat', 'Stok_Saat_Ini', 'Harga_Jual']
     if df_master_obat is None or not all(col in df_master_obat.columns for col in required_cols):
         st.error("Gagal memperbarui stok. Pastikan sheet 'master_obat' memiliki kolom: 'Nama_Obat', 'Stok_Saat_Ini', dan 'Harga_Jual'.")
@@ -228,7 +240,6 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
     # 1. Cari ID Resep terakhir
     df_resep = load_data("resep_keluar")
     if df_resep is not None and not df_resep.empty and 'ID_Resep' in df_resep.columns:
-        # Handle jika ada nilai non-numeric, asumsikan ID resep adalah string 'R-XXX'
         id_numbers = df_resep['ID_Resep'].astype(str).str.replace('R-', '', regex=False)
         valid_ids = pd.to_numeric(id_numbers, errors='coerce').dropna()
         last_id = valid_ids.max()
@@ -248,7 +259,7 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
             master_row = df_master_obat[df_master_obat['Nama_Obat'] == nama_obat]
             
             if master_row.empty:
-                st.warning(f"Obat '{nama_obat}' tidak ditemukan di Master Obat.")
+                st.error(f"Obat '{nama_obat}' tidak ditemukan di Master Obat. (Cek spasi/typo di sheet)")
                 all_ok = False
                 continue
             
@@ -315,6 +326,14 @@ def clear_form_inputs(keys):
     # Reset juga dynamic items
     if 'resep_items' in keys and 'resep_items' in st.session_state:
          st.session_state.resep_items = [{'obat': '', 'jumlah': 0, 'aturan': '', 'harga': 0.0}] 
+    if 'bahan_items' in keys and 'bahan_items' in st.session_state:
+         st.session_state.bahan_items = [{'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0, 'satuan': '', 'biaya': 0.0}]
+    
+    # Reset juga Biaya Tambahan Kalkulator Warkop
+    if 'reset_warkop_cost' in keys:
+        st.session_state.kemasan_cost = 0
+        st.session_state.ongkos_cost = 0
+        st.session_state.operasional_cost = 0
 
     st.experimental_rerun()
 
@@ -328,6 +347,17 @@ def remove_resep_item(index):
     else:
         st.session_state.resep_items[0] = {'obat': '', 'jumlah': 0, 'aturan': '', 'harga': 0.0}
 
+# --- FUNGSI UNTUK TAMBAH/HAPUS BAHAN WARKOP ---
+def add_bahan_item():
+    st.session_state.bahan_items.append({'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0, 'satuan': '', 'biaya': 0.0})
+
+def remove_bahan_item(index):
+    if len(st.session_state.bahan_items) > 1:
+        st.session_state.bahan_items.pop(index)
+    else:
+        st.session_state.bahan_items[0] = {'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0, 'satuan': '', 'biaya': 0.0}
+
+
 # --- PENGELOMPOKAN DATA BERDASARKAN BISNIS ---
 df_beras_master = load_data("beras_master") 
 df_beras_trx = load_data("beras_transaksi")
@@ -340,15 +370,23 @@ df_warkop_trx = load_data("warkop_transaksi")
 
 obat_list = ["-- Pilih Obat --"]
 obat_price_map = {}
+# Kolom yang wajib ada
+OBAT_COLS = ['Nama_Obat', 'Harga_Jual']
 
 if df_obat_master is not None and not df_obat_master.empty:
-    if 'Nama_Obat' in df_obat_master.columns and 'Harga_Jual' in df_obat_master.columns:
-        # LOGIKA ASAL ERROR ADA DI SINI, KINI DILINDUNGI OLEH IF CHECK
-        obat_data = df_obat_master[['Nama_Obat', 'Harga_Jual']].dropna(subset=['Nama_Obat', 'Harga_Jual'])
-        obat_list += obat_data['Nama_Obat'].unique().tolist()
-        obat_price_map = obat_data.set_index('Nama_Obat')['Harga_Jual'].to_dict()
+    if all(col in df_obat_master.columns for col in OBAT_COLS):
+        # Filter data yang benar-benar bersih dan konversi Harga_Jual ke float
+        obat_data = df_obat_master[OBAT_COLS].dropna(subset=OBAT_COLS)
+        obat_data['Harga_Jual'] = pd.to_numeric(obat_data['Harga_Jual'], errors='coerce')
+        obat_data = obat_data.dropna(subset=['Harga_Jual'])
+
+        if not obat_data.empty:
+            obat_list += obat_data['Nama_Obat'].unique().tolist()
+            obat_price_map = obat_data.set_index('Nama_Obat')['Harga_Jual'].to_dict()
+        else:
+            st.warning("⚠️ Data Obat valid (Harga Jual dan Nama Obat) tidak ditemukan di Master Obat.")
     else:
-        st.warning("⚠️ Kolom 'Nama_Obat' atau 'Harga_Jual' hilang dari sheet Master Obat!")
+        st.warning("⚠️ Kolom 'Nama_Obat' atau 'Harga_Jual' hilang dari sheet Master Obat! Cek penulisan kolom.")
     
 if df_beras_master is not None and not df_beras_master.empty and 'Nama_Beras' in df_beras_master.columns:
     beras_list = ["-- Pilih Beras --"] + df_beras_master['Nama_Beras'].dropna().unique().tolist()
@@ -357,6 +395,8 @@ else:
 
 # --- Fungsi Laporan Keuangan (Laba Bersih Per Unit) ---
 def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_faktur_obat):
+    
+    # ... (LOGIKA REPORT SAMA DENGAN SEBELUMNYA) ...
     
     # --- 1. PENGUMPULAN DATA TRANSAKSI UTAMA ---
     
@@ -440,12 +480,6 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
     col_final_2.metric("TOTAL PENGELUARAN SEMUA UNIT", f"Rp {pengeluaran_total:,.0f}")
     col_final_3.metric("LABA BERSIH TOTAL", f"Rp {laba_bersih_sementara:,.0f}")
 
-# --- LOGIKA TAMPILAN UTAMA ---
-
-st.title("Dashboard Bisnis GR8TER")
-
-tab_beras, tab_dokter, tab_warkop, tab_laporan = st.tabs(["🌾 Beras Tuju-Tuju Mart", "🩺 Praktek Dokter", "☕ Warkop Es Pak Sorden", "📈 Laporan Keuangan & Stok Total"])
-
 
 # ===============================================================
 # 1. TAB BERAS TUJU-TUJU MART
@@ -457,7 +491,10 @@ with tab_beras:
     
     with sub_tab_master:
         st.markdown("### Master Stok Beras")
-        with st.expander("➕ Input Stok/Master Beras Baru"):
+        
+        # PERBAIKAN: Menggunakan st.container
+        with st.container(border=True): 
+            st.markdown("#### ➕ Input Stok/Master Beras Baru")
             
             col_name, col_buy, col_sell, col_stock = st.columns(4)
             with col_name:
@@ -488,7 +525,6 @@ with tab_beras:
         st.markdown("#### 💸 Input Transaksi Penjualan/Pembelian Beras")
         with st.container(border=True):
             
-            # --- INPUT TANGGAL BARU ---
             tr_date_beras = st.date_input("Tanggal Transaksi", pd.to_datetime('today').date(), key="tr_date_beras")
             
             col_type, col_product = st.columns(2)
@@ -500,7 +536,6 @@ with tab_beras:
                     key="tr_type_beras"
                 )
             with col_product:
-                # --- SELECTBOX PRODUK BARU ---
                 tr_product_beras = st.selectbox(
                     "Nama/Jenis Beras",
                     options=beras_list,
@@ -551,7 +586,10 @@ with tab_dokter:
     # --- SUB-TAB 1: MASTER OBAT ---
     with sub_tab_master:
         st.markdown("### Master Stok Obat & Peringatan Kedaluwarsa")
-        with st.expander("➕ Input Master Obat Baru"):
+        
+        # PERBAIKAN: Menggunakan st.container
+        with st.container(border=True): 
+            st.markdown("#### ➕ Input Master Obat Baru")
             
             col_name, col_buy, col_sell = st.columns(3)
             with col_name:
@@ -664,7 +702,6 @@ with tab_dokter:
                 st.metric("Total Biaya Resep", f"Rp {total_resep:,.0f}")
                 
             def handle_save_resep():
-                # Memastikan df_obat_master sudah dimuat sebelum memanggil fungsi save
                 df_obat_master_latest = load_data("master_obat")
                 if save_resep_and_update_stock(st.session_state.pasien_resep, st.session_state.resep_items, df_obat_master_latest):
                     clear_form_inputs(['pasien_resep', 'resep_items'])
@@ -718,7 +755,6 @@ with tab_warkop:
         st.markdown("#### 💸 Input Transaksi Penjualan Warkop")
         with st.container(border=True):
             
-            # --- INPUT TANGGAL BARU ---
             tr_date_warkop = st.date_input("Tanggal Transaksi", pd.to_datetime('today').date(), key="tr_date_warkop")
             
             col_type, col_amount, col_party = st.columns(3)
@@ -758,7 +794,91 @@ with tab_warkop:
     
     with sub_tab_cost_estimator:
         st.markdown("### Kalkulator Biaya Menu (Cost Estimator)")
-        st.info("Fitur kalkulator biaya menu belum diimplementasikan.")
+        st.info("Hitung Harga Pokok Penjualan (HPP) per porsi menu Anda.")
+        
+        menu_name = st.text_input("Nama Menu yang Dihitung", placeholder="Contoh: Es Kopi Susu Pak Sorden", key="menu_name_warkop")
+        
+        # --- INPUT BAHAN BAKU DINAMIS ---
+        st.subheader("1. Biaya Bahan Baku per Porsi")
+        total_hpp_bahan = 0
+        
+        col_header = st.columns([3, 1, 1.5, 1, 1])
+        with col_header[0]: st.markdown("**Nama Bahan**")
+        with col_header[1]: st.markdown("**Harga Unit (Rp)**")
+        with col_header[2]: st.markdown("**Kuantitas Dipakai**")
+        with col_header[3]: st.markdown("**Satuan**")
+        with col_header[4]: st.markdown("**Total Biaya**")
+        st.markdown("---") 
+
+        for i, item in enumerate(st.session_state.bahan_items):
+            cols = st.columns([3, 1, 1.5, 1, 1])
+            
+            with cols[0]:
+                st.text_input("Nama Bahan", value=item['nama'], label_visibility="collapsed", key=f"bahan_nama_{i}", placeholder="Contoh: Kopi Bubuk")
+            with cols[1]:
+                harga_unit = st.number_input("Harga Unit (Rp)", min_value=0.0, step=100.0, value=item['harga_unit'], label_visibility="collapsed", key=f"bahan_harga_{i}")
+            with cols[2]:
+                qty_pakai = st.number_input("Qty Dipakai", min_value=0.0, step=0.01, value=item['qty_pakai'], label_visibility="collapsed", key=f"bahan_qty_{i}")
+            with cols[3]:
+                 st.text_input("Satuan", value=item['satuan'], label_visibility="collapsed", key=f"bahan_satuan_{i}", placeholder="gr/ml/unit")
+            
+            # Perhitungan Biaya Bahan per baris
+            biaya_item = round(harga_unit * qty_pakai)
+            with cols[4]:
+                st.metric("Biaya", f"Rp {biaya_item:,.0f}", label_visibility="collapsed")
+            
+            # Update session state
+            st.session_state.bahan_items[i]['nama'] = st.session_state.get(f"bahan_nama_{i}")
+            st.session_state.bahan_items[i]['harga_unit'] = st.session_state.get(f"bahan_harga_{i}")
+            st.session_state.bahan_items[i]['qty_pakai'] = st.session_state.get(f"bahan_qty_{i}")
+            st.session_state.bahan_items[i]['satuan'] = st.session_state.get(f"bahan_satuan_{i}")
+            st.session_state.bahan_items[i]['biaya'] = biaya_item
+            
+            total_hpp_bahan += biaya_item
+        
+        col_add, col_del, col_total_bahan = st.columns([1, 1, 2])
+        with col_add:
+            st.button("➕ Tambah Bahan", on_click=add_bahan_item)
+        with col_del:
+            st.button("Hapus Bahan Terakhir", on_click=lambda: remove_bahan_item(len(st.session_state.bahan_items) - 1))
+        
+        with col_total_bahan:
+            st.metric("Total Biaya Bahan Baku", f"Rp {total_hpp_bahan:,.0f}")
+            
+        st.markdown("---")
+        
+        # --- INPUT BIAYA TAMBAHAN PER PORSI ---
+        st.subheader("2. Biaya Tambahan per Porsi")
+        
+        col_kemasan, col_ongkos, col_operasional = st.columns(3)
+        with col_kemasan:
+            kemasan_cost = st.number_input("Biaya Kemasan (cup, sedotan, dll)", min_value=0, step=100, key="kemasan_cost")
+        with col_ongkos:
+            ongkos_cost = st.number_input("Biaya Tenaga Kerja/Gaji (perkiraan per porsi)", min_value=0, step=100, key="ongkos_cost")
+        with col_operasional:
+            operasional_cost = st.number_input("Biaya Operasional (listrik, air, sewa - perkiraan per porsi)", min_value=0, step=100, key="operasional_cost")
+
+        # --- REKAPITULASI DAN HASIL AKHIR ---
+        st.markdown("---")
+        st.subheader("3. Rekapitulasi Harga Pokok Penjualan (HPP)")
+        
+        hpp_total = total_hpp_bahan + kemasan_cost + ongkos_cost + operasional_cost
+        
+        col_hpp, col_saran = st.columns(2)
+        with col_hpp:
+            st.metric(
+                "TOTAL HPP per Porsi", 
+                f"Rp {hpp_total:,.0f}",
+                help=f"HPP = Bahan ({total_hpp_bahan:,}) + Kemasan ({kemasan_cost:,}) + Ongkos ({ongkos_cost:,}) + Operasional ({operasional_cost:,})"
+            )
+        
+        with col_saran:
+            # Menggunakan Markup 50% sebagai saran awal
+            saran_harga_jual = round(hpp_total * 1.5, -2) # Pembulatan ke 100 terdekat
+            st.metric("SARAN HARGA JUAL (Markup 50%)", f"Rp {saran_harga_jual:,.0f}", delta="Coba Jual Lebih Tinggi!")
+            
+        if st.button("Reset Kalkulator", key="btn_reset_kalkulator"):
+            clear_form_inputs(['menu_name_warkop', 'bahan_items', 'reset_warkop_cost'])
 
 
 # ===============================================================
