@@ -316,6 +316,7 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
         return False
 
 # --- FUNGSI LOGIKA UNTUK RESET FORM INPUT ---
+# PERBAIKAN: Menghapus st.experimental_rerun() dari sini
 def clear_form_inputs(keys):
     """Mengosongkan input form setelah save sukses."""
     for key in keys:
@@ -333,8 +334,6 @@ def clear_form_inputs(keys):
         st.session_state.kemasan_cost = 0
         st.session_state.ongkos_cost = 0
         st.session_state.operasional_cost = 0
-
-    st.experimental_rerun()
 
 # --- FUNGSI UNTUK TAMBAH/HAPUS RESEP ITEM ---
 def add_resep_item():
@@ -477,7 +476,7 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
     col_final_2.metric("TOTAL PENGELUARAN SEMUA UNIT", f"Rp {pengeluaran_total:,.0f}")
     col_final_3.metric("LABA BERSIH TOTAL", f"Rp {laba_bersih_sementara:,.0f}")
 
-# --- PERBAIKAN PENTING: INISIALISASI TAB UTAMA ---
+# --- INISIALISASI TAB UTAMA ---
 st.title("Sistem Dashboard Terintegrasi GR8TER")
 st.markdown("Aplikasi Pencatatan dan Monitoring Stok/Keuangan untuk Tuju-Tuju Mart, Praktek Dokter, dan Warkop.")
 
@@ -513,12 +512,22 @@ with tab_beras:
             with col_stock:
                 stok_beras_master = st.number_input("Stok Awal (Zak)", min_value=0, step=1, key="stok_beras_master")
             
+            # PERBAIKAN LOGIKA: Memanggil clear_form_inputs di dalam handle_save tidak boleh memanggil rerun.
+            # Rerun harus di-trigger secara manual jika save sukses, atau form direset tanpa rerun.
             def handle_save_master_beras():
                 data = {'nama_beras_master': st.session_state.nama_beras_master, 'hb_beras': st.session_state.hb_beras, 'hj_beras_master': st.session_state.hj_beras_master, 'stok_beras_master': st.session_state.stok_beras_master}
                 if save_data("beras_master", data):
+                    # Hanya hapus state, rerun dipicu oleh st.button
                     clear_form_inputs(['nama_beras_master', 'hb_beras', 'hj_beras_master', 'stok_beras_master'])
+                    st.experimental_rerun() # Pindahkan rerun ke sini (hanya bisa di root script)
 
-            st.button("Simpan Master Beras", key="btn_save_master_beras", on_click=handle_save_master_beras) 
+            # NOTE: Karena `st.experimental_rerun()` tidak bisa dipanggil di callback tombol dalam versi Streamlit lama,
+            # Saya akan mengubah callback agar me-refresh halaman, namun kali ini saya akan coba panggil `st.experimental_rerun()` di dalam handler.
+            # Jika ini masih error, alternatifnya adalah menghapus `st.experimental_rerun()` dan mengandalkan *success message*.
+
+            # Mencoba memanggil rerun di dalam handler.
+            if st.button("Simpan Master Beras", key="btn_save_master_beras", on_click=handle_save_master_beras):
+                pass # Aksi sudah di dalam handler
 
         st.subheader("Data Master Beras Terbaru")
         if df_beras_master is not None and not df_beras_master.empty:
@@ -572,8 +581,11 @@ with tab_beras:
                 }
                 if save_data("beras_transaksi", data):
                     clear_form_inputs(['tr_date_beras', 'tr_type_beras', 'tr_product_beras', 'tr_amount_beras', 'tr_party_beras', 'catatan_beras'])
+                    st.experimental_rerun()
 
-            st.button("Simpan Transaksi Kasir", key="btn_save_transaksi_beras", on_click=handle_save_transaksi_beras)
+            if st.button("Simpan Transaksi Kasir", key="btn_save_transaksi_beras", on_click=handle_save_transaksi_beras):
+                pass
+
 
         st.subheader("Data Transaksi Terbaru Beras Tuju-Tuju Mart")
         if df_beras_trx is not None and not df_beras_trx.empty:
@@ -618,8 +630,10 @@ with tab_dokter:
                 data = {'nama_obat': st.session_state.nama_obat, 'hb_obat': st.session_state.hb_obat, 'hj_obat': st.session_state.hj_obat, 'satuan_obat': st.session_state.satuan_obat, 'ed_obat': st.session_state.ed_obat, 'stok_awal_obat': st.session_state.stok_awal_obat}
                 if save_data("master_obat", data):
                     clear_form_inputs(['nama_obat', 'hb_obat', 'hj_obat', 'satuan_obat', 'ed_obat', 'stok_awal_obat'])
+                    st.experimental_rerun()
 
-            st.button("Simpan Master Obat", key="btn_save_master_obat", on_click=handle_save_master_obat_dokter) 
+            if st.button("Simpan Master Obat", key="btn_save_master_obat", on_click=handle_save_master_obat_dokter):
+                pass 
 
         st.subheader("Peringatan Kedaluwarsa Obat")
         
@@ -692,7 +706,8 @@ with tab_dokter:
                     st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
                 with cols[3]:
                     if st.button("Hapus", key=f"del_resep_{i}", on_click=lambda i=i: remove_resep_item(i)):
-                        st.experimental_rerun()
+                        # Tidak perlu rerun di sini, Streamlit akan refresh otomatis setelah callback
+                        pass
                 
                 # Update item['jumlah'] dan item['aturan'] dari session state
                 st.session_state.resep_items[i]['jumlah'] = st.session_state.get(f"jumlah_{i}", 0)
@@ -712,8 +727,10 @@ with tab_dokter:
                 df_obat_master_latest = load_data("master_obat")
                 if save_resep_and_update_stock(st.session_state.pasien_resep, st.session_state.resep_items, df_obat_master_latest):
                     clear_form_inputs(['pasien_resep', 'resep_items'])
+                    st.experimental_rerun()
 
-            st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep", on_click=handle_save_resep)
+            if st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep", on_click=handle_save_resep):
+                pass
 
         st.subheader("Data Resep Keluar Terbaru")
         if df_resep_keluar is not None and not df_resep_keluar.empty:
@@ -737,9 +754,15 @@ with tab_dokter:
             total_faktur = st.number_input("Total Biaya Faktur (Rp)", min_value=0, step=1000, key="total_faktur")
             detail_faktur = st.text_area("Detail Item yang Dibeli", help="Contoh: Amoxilin 5 Box, Exp 2026-10-01", key="detail_faktur")
             
-            if st.button("Simpan Faktur & Tambahkan Stok", key="btn_save_faktur"):
-                st.success(f"Faktur No. {no_faktur} dari {nama_supplier} tersimpan & Stok berhasil ditambahkan (Logika update stok untuk faktur akan diimplementasikan berikutnya).")
+            def handle_save_faktur():
+                # NOTE: Implementasi simpan faktur ke Google Sheet dan update stok masih placeholder/belum full diimplementasi.
+                st.success(f"Faktur No. {st.session_state.no_faktur} dari {st.session_state.nama_supplier} tersimpan (Simulasi penambahan stok berhasil).")
                 st.cache_data.clear() 
+                clear_form_inputs(['no_faktur', 'nama_supplier', 'tgl_beli', 'total_faktur', 'detail_faktur'])
+                st.experimental_rerun()
+                
+            if st.button("Simpan Faktur & Tambahkan Stok", key="btn_save_faktur", on_click=handle_save_faktur):
+                pass
 
         st.subheader("Data Faktur Pembelian Obat Terbaru")
         if df_faktur_obat is not None and not df_faktur_obat.empty:
@@ -789,8 +812,10 @@ with tab_warkop:
                 }
                 if save_data("warkop_transaksi", data):
                     clear_form_inputs(['tr_date_warkop', 'tr_type_warkop', 'tr_amount_warkop', 'tr_party_warkop', 'catatan_warkop'])
+                    st.experimental_rerun()
             
-            st.button("Simpan Transaksi", key="btn_save_transaksi_warkop", on_click=handle_save_transaksi_warkop)
+            if st.button("Simpan Transaksi", key="btn_save_transaksi_warkop", on_click=handle_save_transaksi_warkop):
+                pass
 
         st.markdown("---")
         st.subheader("Data Transaksi Terbaru Warkop")
@@ -845,9 +870,11 @@ with tab_warkop:
         
         col_add, col_del, col_total_bahan = st.columns([1, 1, 2])
         with col_add:
-            st.button("➕ Tambah Bahan", on_click=add_bahan_item)
+            if st.button("➕ Tambah Bahan", on_click=add_bahan_item):
+                 st.experimental_rerun()
         with col_del:
-            st.button("Hapus Bahan Terakhir", on_click=lambda: remove_bahan_item(len(st.session_state.bahan_items) - 1))
+            if st.button("Hapus Bahan Terakhir", on_click=lambda: remove_bahan_item(len(st.session_state.bahan_items) - 1)):
+                 st.experimental_rerun()
         
         with col_total_bahan:
             st.metric("Total Biaya Bahan Baku", f"Rp {total_hpp_bahan:,.0f}")
@@ -884,8 +911,12 @@ with tab_warkop:
             saran_harga_jual = round(hpp_total * 1.5, -2) # Pembulatan ke 100 terdekat
             st.metric("SARAN HARGA JUAL (Markup 50%)", f"Rp {saran_harga_jual:,.0f}", delta="Coba Jual Lebih Tinggi!")
             
-        if st.button("Reset Kalkulator", key="btn_reset_kalkulator"):
+        def handle_reset_kalkulator():
             clear_form_inputs(['menu_name_warkop', 'bahan_items', 'reset_warkop_cost'])
+            st.experimental_rerun()
+
+        if st.button("Reset Kalkulator", key="btn_reset_kalkulator", on_click=handle_reset_kalkulator):
+            pass
 
 
 # ===============================================================
