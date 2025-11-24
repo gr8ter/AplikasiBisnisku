@@ -23,7 +23,6 @@ NAMA_BISNIS_BERAS = "TUJU-TUJU MART"
 
 # Inisialisasi Session State
 if 'resep_items' not in st.session_state:
-    # Ditambah kolom 'harga' untuk tracking harga jual saat ini
     st.session_state.resep_items = [{'obat': '', 'jumlah': 0, 'aturan': '', 'harga': 0.0}] 
 if 'bahan_items' not in st.session_state:
     st.session_state.bahan_items = [{'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0}] 
@@ -135,7 +134,7 @@ def load_data(sheet_name):
             return None
     return None
 
-# --- FUNGSI BARU: UPDATE SEL TUNGGAL DI GOOGLE SHEETS ---
+# --- FUNGSI UPDATE SEL TUNGGAL DI GOOGLE SHEETS ---
 def update_sheet_cell(sheet_name, row_index, col_name, new_value):
     sh = get_gspread_client()
     if sh is None:
@@ -214,16 +213,25 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
     if not pasien_resep.strip():
         st.error("Nama Pasien wajib diisi.")
         return False
+    
+    # Pengecekan krusial untuk mencegah crash
+    required_cols = ['Nama_Obat', 'Stok_Saat_Ini', 'Harga_Jual']
+    if df_master_obat is None or not all(col in df_master_obat.columns for col in required_cols):
+        st.error("Gagal memperbarui stok. Pastikan sheet 'master_obat' memiliki kolom: 'Nama_Obat', 'Stok_Saat_Ini', dan 'Harga_Jual'.")
+        return False
 
     items_for_stock_update = []
     items_for_resep_sheet = []
     total_biaya_resep = 0
     today = pd.to_datetime('today').date()
     
-    # 1. Cari ID Resep terakhir (untuk grouping di sheet resep_keluar)
+    # 1. Cari ID Resep terakhir
     df_resep = load_data("resep_keluar")
     if df_resep is not None and not df_resep.empty and 'ID_Resep' in df_resep.columns:
-        last_id = df_resep['ID_Resep'].astype(str).str.replace('R-', '', regex=False).astype(float).max()
+        # Handle jika ada nilai non-numeric, asumsikan ID resep adalah string 'R-XXX'
+        id_numbers = df_resep['ID_Resep'].astype(str).str.replace('R-', '', regex=False)
+        valid_ids = pd.to_numeric(id_numbers, errors='coerce').dropna()
+        last_id = valid_ids.max()
         new_id_num = int(last_id) + 1 if pd.notna(last_id) else 1
     else:
         new_id_num = 1
@@ -244,7 +252,6 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
                 all_ok = False
                 continue
             
-            # Mendapatkan index df (untuk update sheets) dan stok/harga
             master_idx = master_row.index[0] 
             current_stok = master_row['Stok_Saat_Ini'].iloc[0]
             harga_jual = master_row['Harga_Jual'].iloc[0]
@@ -311,6 +318,15 @@ def clear_form_inputs(keys):
 
     st.experimental_rerun()
 
+# --- FUNGSI UNTUK TAMBAH/HAPUS RESEP ITEM ---
+def add_resep_item():
+    st.session_state.resep_items.append({'obat': '', 'jumlah': 0, 'aturan': '', 'harga': 0.0})
+
+def remove_resep_item(index):
+    if len(st.session_state.resep_items) > 1:
+        st.session_state.resep_items.pop(index)
+    else:
+        st.session_state.resep_items[0] = {'obat': '', 'jumlah': 0, 'aturan': '', 'harga': 0.0}
 
 # --- PENGELOMPOKAN DATA BERDASARKAN BISNIS ---
 df_beras_master = load_data("beras_master") 
@@ -320,14 +336,19 @@ df_resep_keluar = load_data("resep_keluar")
 df_faktur_obat = load_data("faktur_obat") 
 df_warkop_trx = load_data("warkop_transaksi")
 
-# --- DATA LIST UNTUK SELECTBOX BARU ---
-if df_obat_master is not None and not df_obat_master.empty and 'Nama_Obat' in df_obat_master.columns:
-    obat_data = df_obat_master[['Nama_Obat', 'Harga_Jual']].dropna(subset=['Nama_Obat', 'Harga_Jual'])
-    obat_list = ["-- Pilih Obat --"] + obat_data['Nama_Obat'].unique().tolist()
-    obat_price_map = obat_data.set_index('Nama_Obat')['Harga_Jual'].to_dict()
-else:
-    obat_list = ["-- Pilih Obat --"]
-    obat_price_map = {}
+# --- DATA LIST UNTUK SELECTBOX BARU (DILINDUNGI DARI KEYERROR) ---
+
+obat_list = ["-- Pilih Obat --"]
+obat_price_map = {}
+
+if df_obat_master is not None and not df_obat_master.empty:
+    if 'Nama_Obat' in df_obat_master.columns and 'Harga_Jual' in df_obat_master.columns:
+        # LOGIKA ASAL ERROR ADA DI SINI, KINI DILINDUNGI OLEH IF CHECK
+        obat_data = df_obat_master[['Nama_Obat', 'Harga_Jual']].dropna(subset=['Nama_Obat', 'Harga_Jual'])
+        obat_list += obat_data['Nama_Obat'].unique().tolist()
+        obat_price_map = obat_data.set_index('Nama_Obat')['Harga_Jual'].to_dict()
+    else:
+        st.warning("⚠️ Kolom 'Nama_Obat' atau 'Harga_Jual' hilang dari sheet Master Obat!")
     
 if df_beras_master is not None and not df_beras_master.empty and 'Nama_Beras' in df_beras_master.columns:
     beras_list = ["-- Pilih Beras --"] + df_beras_master['Nama_Beras'].dropna().unique().tolist()
@@ -339,7 +360,7 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
     
     # --- 1. PENGUMPULAN DATA TRANSAKSI UTAMA ---
     
-    # Beras Mart (Pemasukan: Penjualan Tunai + Penerimaan Piutang | Pengeluaran: Pembelian Utang + Pembayaran Utang)
+    # Beras Mart
     if df_beras_trx is not None and not df_beras_trx.empty:
         beras_penjualan_tunai = df_beras_trx[df_beras_trx['Jenis_Transaksi'] == 'Penjualan Tunai']['Jumlah_Transaksi'].sum()
         beras_penerimaan_piutang = df_beras_trx[df_beras_trx['Jenis_Transaksi'] == 'Penerimaan Piutang']['Jumlah_Transaksi'].sum()
@@ -348,7 +369,7 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
     else:
         beras_penjualan_tunai, beras_penerimaan_piutang, beras_pembelian_utang, beras_pembayaran_utang = 0, 0, 0, 0
     
-    # Warkop (Pemasukan: Penjualan Tunai + Penerimaan Piutang | Pengeluaran: Pembelian Utang + Pembayaran Utang)
+    # Warkop 
     if df_warkop_trx is not None and not df_warkop_trx.empty:
         warkop_penjualan_tunai = df_warkop_trx[df_warkop_trx['Jenis_Transaksi'] == 'Penjualan Tunai']['Jumlah_Transaksi'].sum()
         warkop_penerimaan_piutang = df_warkop_trx[df_warkop_trx['Jenis_Transaksi'] == 'Penerimaan Piutang']['Jumlah_Transaksi'].sum()
@@ -357,9 +378,9 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
     else:
         warkop_penjualan_tunai, warkop_penerimaan_piutang, warkop_pembelian_utang, warkop_pembayaran_utang = 0, 0, 0, 0
         
-    # Dokter (Pemasukan: Resep Keluar | Pengeluaran: Faktur Pembelian Obat)
-    if df_resep_keluar is not None and not df_resep_keluar.empty and 'Total_Biaya' in df_resep_keluar.columns:
-        dokter_total_resep = df_resep_keluar['Total_Biaya_Resep'].sum() # Menggunakan Total_Biaya_Resep dari sheet yang baru
+    # Dokter (Resep dan Faktur)
+    if df_resep_keluar is not None and not df_resep_keluar.empty and 'Total_Biaya_Resep' in df_resep_keluar.columns:
+        dokter_total_resep = df_resep_keluar['Total_Biaya_Resep'].sum() 
     else:
         dokter_total_resep = 0
         
@@ -370,25 +391,21 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
 
     # --- 2. KALKULASI LABA PER UNIT BISNIS ---
     
-    # LABA BERAS
     pemasukan_beras = beras_penjualan_tunai + beras_penerimaan_piutang
     pengeluaran_beras = beras_pembelian_utang + beras_pembayaran_utang
     laba_beras = pemasukan_beras - pengeluaran_beras
     
-    # LABA WARKOP
     pemasukan_warkop = warkop_penjualan_tunai + warkop_penerimaan_piutang
     pengeluaran_warkop = warkop_pembelian_utang + warkop_pembayaran_utang
     laba_warkop = pemasukan_warkop - pengeluaran_warkop
     
-    # LABA DOKTER/RESEP
     pemasukan_dokter = dokter_total_resep
     pengeluaran_dokter = dokter_pembelian_faktur
     laba_dokter = pemasukan_dokter - pengeluaran_dokter
     
-    # LABA BERSIH TOTAL
-    laba_bersih_sementara = laba_beras + laba_warkop + laba_dokter
     pemasukan_total = pemasukan_beras + pemasukan_warkop + pemasukan_dokter
     pengeluaran_total = pengeluaran_beras + pengeluaran_warkop + pengeluaran_dokter
+    laba_bersih_sementara = laba_beras + laba_warkop + laba_dokter
     
     # --- 3. OUTPUT RINGKASAN ---
     
@@ -412,16 +429,16 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
     
     col_laba_1, col_laba_2, col_laba_3, col_laba_total = st.columns(4)
     
-    col_laba_1.metric("Laba Beras Tuju-Tuju Mart", f"Rp {laba_beras:,.0f}", delta=f"Pemasukan ({pemasukan_beras:,.0f}) - Pengeluaran ({pengeluaran_beras:,.0f})")
-    col_laba_2.metric("Laba Warkop Es Pak Sorden", f"Rp {laba_warkop:,.0f}", delta=f"Pemasukan ({pemasukan_warkop:,.0f}) - Pengeluaran ({pengeluaran_warkop:,.0f})")
-    col_laba_3.metric("Laba Praktek Dokter (Resep)", f"Rp {laba_dokter:,.0f}", delta=f"Pemasukan ({pemasukan_dokter:,.0f}) - Pengeluaran ({pengeluaran_dokter:,.0f})")
+    col_laba_1.metric("Laba Beras Tuju-Tuju Mart", f"Rp {laba_beras:,.0f}")
+    col_laba_2.metric("Laba Warkop Es Pak Sorden", f"Rp {laba_warkop:,.0f}")
+    col_laba_3.metric("Laba Praktek Dokter (Resep)", f"Rp {laba_dokter:,.0f}")
     
     st.markdown("---")
     
     col_final_1, col_final_2, col_final_3 = st.columns(3)
-    col_final_1.metric("TOTAL PEMASUKAN SEMUA UNIT", f"Rp {pemasukan_total:,.0f}", delta="Total Kas Masuk")
-    col_final_2.metric("TOTAL PENGELUARAN SEMUA UNIT", f"Rp {pengeluaran_total:,.0f}", delta="Total Kas Keluar")
-    col_final_3.metric("LABA BERSIH TOTAL", f"Rp {laba_bersih_sementara:,.0f}", delta=f"Total Laba Bersih Semua Unit")
+    col_final_1.metric("TOTAL PEMASUKAN SEMUA UNIT", f"Rp {pemasukan_total:,.0f}")
+    col_final_2.metric("TOTAL PENGELUARAN SEMUA UNIT", f"Rp {pengeluaran_total:,.0f}")
+    col_final_3.metric("LABA BERSIH TOTAL", f"Rp {laba_bersih_sementara:,.0f}")
 
 # --- LOGIKA TAMPILAN UTAMA ---
 
@@ -573,12 +590,19 @@ with tab_dokter:
             
             if not expired_soon.empty:
                 st.error(f"🚨 **PERINGATAN!** Ada {len(expired_soon)} item akan **Kedaluwarsa dalam 3 Bulan**:")
-                st.dataframe(expired_soon[['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan', 'Stok_Saat_Ini']].dropna(), use_container_width=True)
+                if all(col in df_obat_master.columns for col in ['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan', 'Stok_Saat_Ini']):
+                     st.dataframe(expired_soon[['Nama_Obat', 'Tanggal_Kedaluwarsa', 'Satuan', 'Stok_Saat_Ini']].dropna(), use_container_width=True)
+                else:
+                    st.warning("Kolom penting untuk peringatan kedaluwarsa tidak ditemukan.")
             else:
                 st.success("Semua stok obat aman dari kedaluwarsa dalam 3 bulan.")
             
             st.subheader("Data Stok Master Obat")
-            st.dataframe(df_obat_master[['Nama_Obat', 'Harga_Jual', 'Stok_Saat_Ini', 'Satuan', 'Tanggal_Kedaluwarsa']].head(10), use_container_width=True)
+            if all(col in df_obat_master.columns for col in ['Nama_Obat', 'Harga_Jual', 'Stok_Saat_Ini', 'Satuan', 'Tanggal_Kedaluwarsa']):
+                st.dataframe(df_obat_master[['Nama_Obat', 'Harga_Jual', 'Stok_Saat_Ini', 'Satuan', 'Tanggal_Kedaluwarsa']].head(10), use_container_width=True)
+            else:
+                 st.warning("Kolom penting untuk menampilkan Master Obat tidak ditemukan.")
+
         else:
             st.warning("Data Master Obat tidak dapat dimuat atau kolom bermasalah.")
 
@@ -591,11 +615,9 @@ with tab_dokter:
             
             # --- FUNGSI CALLBACK UNTUK UPDATE HARGA SAAT PILIH OBAT ---
             def update_price(i):
-                nama_obat = st.session_state[f"obat_{i}"]
-                # Cek apakah obat dipilih dan ada di map harga
-                if nama_obat in obat_price_map:
+                nama_obat = st.session_state.get(f"obat_{i}")
+                if nama_obat and nama_obat in obat_price_map:
                     st.session_state.resep_items[i]['harga'] = obat_price_map[nama_obat]
-                    # Update juga nama obat di item state
                     st.session_state.resep_items[i]['obat'] = nama_obat
                 else:
                     st.session_state.resep_items[i]['harga'] = 0.0
@@ -625,14 +647,13 @@ with tab_dokter:
                     st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
                 with cols[3]:
                     if st.button("Hapus", key=f"del_resep_{i}", on_click=lambda i=i: remove_resep_item(i)):
-                        # Karena remove_resep_item akan dipanggil, rerun akan membersihkan session state yang lama
                         st.experimental_rerun()
                 
                 # Update item['jumlah'] dan item['aturan'] dari session state
-                st.session_state.resep_items[i]['jumlah'] = st.session_state[f"jumlah_{i}"]
-                st.session_state.resep_items[i]['aturan'] = st.session_state[f"aturan_{i}"]
+                st.session_state.resep_items[i]['jumlah'] = st.session_state.get(f"jumlah_{i}", 0)
+                st.session_state.resep_items[i]['aturan'] = st.session_state.get(f"aturan_{i}", '')
                 
-                # Hitung Total (menggunakan harga yang di-lookup)
+                # Hitung Total
                 total_resep += st.session_state.resep_items[i]['jumlah'] * st.session_state.resep_items[i]['harga']
             
             st.markdown("---")
@@ -643,8 +664,9 @@ with tab_dokter:
                 st.metric("Total Biaya Resep", f"Rp {total_resep:,.0f}")
                 
             def handle_save_resep():
-                if save_resep_and_update_stock(st.session_state.pasien_resep, st.session_state.resep_items, df_obat_master):
-                    # Bersihkan input setelah sukses
+                # Memastikan df_obat_master sudah dimuat sebelum memanggil fungsi save
+                df_obat_master_latest = load_data("master_obat")
+                if save_resep_and_update_stock(st.session_state.pasien_resep, st.session_state.resep_items, df_obat_master_latest):
                     clear_form_inputs(['pasien_resep', 'resep_items'])
 
             st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep", on_click=handle_save_resep)
