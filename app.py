@@ -25,7 +25,6 @@ NAMA_BISNIS_BERAS = "TUJU-TUJU MART"
 if 'resep_items' not in st.session_state:
     st.session_state.resep_items = [{'obat': '', 'jumlah': 0, 'aturan': '', 'harga': 0.0}] 
 if 'bahan_items' not in st.session_state:
-    # Ditambahkan 'biaya' untuk kalkulator warkop
     st.session_state.bahan_items = [{'nama': '', 'harga_unit': 0.0, 'qty_pakai': 0.0, 'satuan': '', 'biaya': 0.0}] 
 if 'kemasan_cost' not in st.session_state:
     st.session_state.kemasan_cost = 0
@@ -396,8 +395,6 @@ else:
 # --- Fungsi Laporan Keuangan (Laba Bersih Per Unit) ---
 def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_faktur_obat):
     
-    # ... (LOGIKA REPORT SAMA DENGAN SEBELUMNYA) ...
-    
     # --- 1. PENGUMPULAN DATA TRANSAKSI UTAMA ---
     
     # Beras Mart
@@ -480,6 +477,16 @@ def generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_f
     col_final_2.metric("TOTAL PENGELUARAN SEMUA UNIT", f"Rp {pengeluaran_total:,.0f}")
     col_final_3.metric("LABA BERSIH TOTAL", f"Rp {laba_bersih_sementara:,.0f}")
 
+# --- PERBAIKAN PENTING: INISIALISASI TAB UTAMA ---
+st.title("Sistem Dashboard Terintegrasi GR8TER")
+st.markdown("Aplikasi Pencatatan dan Monitoring Stok/Keuangan untuk Tuju-Tuju Mart, Praktek Dokter, dan Warkop.")
+
+tab_beras, tab_dokter, tab_warkop, tab_laporan = st.tabs([
+    "🍚 Beras Tuju-Tuju Mart", 
+    "💊 Praktek Dokter", 
+    "☕ Warkop Es Pak Sorden", 
+    "📊 Laporan Keuangan"
+])
 
 # ===============================================================
 # 1. TAB BERAS TUJU-TUJU MART
