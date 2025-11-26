@@ -107,6 +107,7 @@ def get_gspread_client():
         st.error("Gagal menemukan kredensial. Pastikan file secrets.json ada atau environment variable telah diset.")
         return None
 
+# PERUBAHAN UTAMA 1: TTL ditingkatkan ke 3600s untuk menghindari Quota Exceeded API 429
 @st.cache_data(ttl=3600) 
 def load_data(sheet_name):
     sh = get_gspread_client()
@@ -162,17 +163,27 @@ def update_sheet_cell(sheet_name, row_index, col_name, new_value):
         # Penyesuaian index: row_index dari df (0-based) + 2 (karena header di baris 1)
         sheet_row_index = row_index + 2 
         
-        # Format nilai sebelum update ke sheets
+        # PERBAIKAN UTAMA: Konversi eksplisit ke string untuk menghindari error int64/float64
         value_to_update = new_value
-        if isinstance(new_value, (int, float)):
-             # Format angka tanpa ribuan, gspread akan menginterpretasikannya sebagai float/int
-             value_to_update = str(round(new_value))
+        
+        # Jika nilai adalah tipe numerik (termasuk numpy/pandas int64/float64), 
+        # konversi ke integer Python lalu ke string.
+        if isinstance(new_value, (int, float, np.integer, np.float, np.int64, np.float64)):
+             # Gunakan int() untuk menghilangkan desimal (karena stok selalu bilangan bulat)
+             value_to_update = str(int(new_value)) 
+        
+        # Untuk kasus lain, pastikan itu string
+        value_to_update = str(value_to_update)
              
         worksheet.update_cell(sheet_row_index, col_index, value_to_update)
         
         return True
     except Exception as e:
-        st.error(f"Gagal memperbarui sel di sheet {sheet_name}: {e}")
+        # Menambahkan pengecekan untuk error gspread spesifik
+        if "Object of type" in str(e) and "is not JSON serializable" in str(e):
+             st.error(f"Gagal memperbarui sel karena masalah format data (JSON serializable). Pastikan nilai dikonversi ke string/int Python sebelum dikirim. Error: {e}")
+        else:
+            st.error(f"Gagal memperbarui sel di sheet {sheet_name}: {e}")
         return False
 
 
@@ -201,8 +212,8 @@ def save_data(sheet_name, data_dict):
         # [Nama_Obat, Harga_Beli, Harga_Jual, Satuan, Tanggal_Kedaluwarsa, Stok_Saat_Ini]
         row_to_append = [data_dict['nama_obat'], data_dict['hb_obat'], data_dict['hj_obat'], data_dict['satuan_obat'], data_dict['ed_obat'].strftime('%Y-%m-%d'), data_dict['stok_awal_obat']]
     elif sheet_name == "warkop_transaksi":
-         # URUTAN: [Tanggal_Transaksi, Jenis_Transaksi, Jumlah_Transaksi, Pihak_Terkait, Catatan]
-         row_to_append = [
+          # URUTAN: [Tanggal_Transaksi, Jenis_Transaksi, Jumlah_Transaksi, Pihak_Terkait, Catatan]
+          row_to_append = [
             data_dict['tr_date_warkop'].strftime('%Y-%m-%d'), 
             data_dict['tr_type_warkop'],
             data_dict['tr_amount_warkop'],
@@ -268,13 +279,21 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
             
             master_idx = master_row.index[0] 
             current_stok = master_row['Stok_Saat_Ini'].iloc[0]
-            harga_jual = master_row['Harga_Jual'].iloc[0]
             
+            # Catatan: Harga Jual diambil dari Harga Jual yang sudah di-load, bukan dari map
+            harga_jual = master_row['Harga_Jual'].iloc[0] 
+            
+            # Memastikan Stok Saat Ini terbaca sebagai angka
             if pd.isna(current_stok) or current_stok < jumlah:
                 st.error(f"Stok '{nama_obat}' tidak cukup ({current_stok:,.0f}). Permintaan: {jumlah:,.0f}.")
                 all_ok = False
                 continue
                 
+            # Memastikan Harga Jual terbaca sebagai angka, default ke 0 jika NaN
+            if pd.isna(harga_jual):
+                st.warning(f"Harga Jual untuk '{nama_obat}' tidak valid/kosong. Biaya dihitung Rp 0.0.")
+                harga_jual = 0.0
+
             new_stok = current_stok - jumlah
             biaya_item = jumlah * harga_jual
             total_biaya_resep += biaya_item
@@ -309,6 +328,8 @@ def save_resep_and_update_stock(pasien_resep, resep_items, df_master_obat):
         # B. APPEND DATA KE RESEP KELUAR
         sh = get_gspread_client()
         worksheet_resep = sh.worksheet("resep_keluar")
+        
+        # Kolom untuk Resep Keluar: ID_Resep, Tanggal_Resep, Nama_Pasien, Nama_Obat, Jumlah, Aturan_Pakai, Total_Biaya_Resep
         worksheet_resep.append_rows(items_for_resep_sheet)
         
         st.cache_data.clear() 
@@ -376,16 +397,31 @@ OBAT_COLS = ['Nama_Obat', 'Harga_Jual']
 
 if df_obat_master is not None and not df_obat_master.empty:
     if all(col in df_obat_master.columns for col in OBAT_COLS):
-        # Filter data yang benar-benar bersih dan konversi Harga_Jual ke float
-        obat_data = df_obat_master[OBAT_COLS].dropna(subset=OBAT_COLS)
-        obat_data['Harga_Jual'] = pd.to_numeric(obat_data['Harga_Jual'], errors='coerce')
-        obat_data = obat_data.dropna(subset=['Harga_Jual'])
+        
+        # Buat salinan untuk pemrosesan
+        obat_proc = df_obat_master.copy()
+        
+        # 1. Konversi Harga_Jual: Jika gagal atau kosong, isikan dengan 0.0 (ini mencegah baris terhapus)
+        obat_proc['Harga_Jual_Clean'] = pd.to_numeric(obat_proc['Harga_Jual'], errors='coerce').fillna(0.0) 
+        
+        # 2. Filter data untuk LIST: Hanya yang ada Nama Obat-nya
+        list_data = obat_proc[obat_proc['Nama_Obat'].astype(str).str.strip() != ''].copy()
 
-        if not obat_data.empty:
-            obat_list += obat_data['Nama_Obat'].unique().tolist()
-            obat_price_map = obat_data.set_index('Nama_Obat')['Harga_Jual'].to_dict()
+        if not list_data.empty:
+            # Populasikan daftar obat (Sekarang semua obat dengan nama akan masuk)
+            obat_list += list_data['Nama_Obat'].unique().tolist()
+            
+            # 3. Populasikan MAP harga: menggunakan kolom yang sudah dibersihkan (Harga_Jual_Clean)
+            # Harga akan 0.0 jika di Google Sheets datanya kosong/bermasalah
+            obat_price_map = list_data.set_index('Nama_Obat')['Harga_Jual_Clean'].to_dict()
+            
+            # Tampilkan peringatan jika ada item yang memiliki harga 0 (untuk ditindaklanjuti pengguna)
+            if (list_data['Harga_Jual_Clean'] == 0.0).any():
+                st.warning("⚠️ Beberapa obat dimuat dengan Harga Jual Rp 0.0 (Harap periksa kolom **Harga_Jual** di Google Sheets **Master Obat**).")
+                
         else:
-            st.warning("⚠️ Data Obat valid (Harga Jual dan Nama Obat) tidak ditemukan di Master Obat.")
+            st.warning("⚠️ Tidak ada Nama Obat yang valid ditemukan di Master Obat.")
+            
     else:
         st.warning("⚠️ Kolom 'Nama_Obat' atau 'Harga_Jual' hilang dari sheet Master Obat! Cek penulisan kolom.")
     
@@ -655,7 +691,7 @@ with tab_dokter:
             
             st.subheader("Data Stok Master Obat")
             if all(col in df_obat_master.columns for col in ['Nama_Obat', 'Harga_Jual', 'Stok_Saat_Ini', 'Satuan', 'Tanggal_Kedaluwarsa']):
-                st.dataframe(df_obat_master[['Nama_Obat', 'Harga_Jual', 'Stok_Saat_Ini', 'Satuan', 'Tanggal_Kedaluwarsa']].head(10), use_container_width=True)
+                 st.dataframe(df_obat_master[['Nama_Obat', 'Harga_Jual', 'Stok_Saat_Ini', 'Satuan', 'Tanggal_Kedaluwarsa']].head(10), use_container_width=True)
             else:
                  st.warning("Kolom penting untuk menampilkan Master Obat tidak ditemukan.")
 
@@ -694,109 +730,169 @@ with tab_dokter:
                 with cols[0]:
                     current_value = item['obat']
                     st.selectbox("Nama Obat", options=obat_list, 
-                                 index=0 if current_value not in obat_list else obat_list.index(current_value), 
-                                 label_visibility="collapsed", key=f"obat_{i}",
-                                 on_change=update_price, args=(i,)) 
+                                 index=obat_list.index(current_value) if current_value in obat_list else 0,
+                                 key=f"obat_{i}", label_visibility="collapsed", on_change=update_price, args=(i,))
+                    
                 with cols[1]:
-                    st.number_input("Jumlah Biji", min_value=0, step=1, value=item['jumlah'], label_visibility="collapsed", key=f"jumlah_{i}")
+                    st.number_input("Jumlah", min_value=0, step=1, key=f"jumlah_{i}", label_visibility="collapsed", 
+                                    on_change=lambda i=i: st.session_state.resep_items[i].update({'jumlah': st.session_state[f"jumlah_{i}"]}))
+                    
                 with cols[2]:
-                    st.text_input("Aturan Pakai", value=item['aturan'], label_visibility="collapsed", key=f"aturan_{i}", placeholder="Contoh: 3x sehari setelah makan")
+                    st.text_input("Aturan Pakai", value=item['aturan'], key=f"aturan_{i}", label_visibility="collapsed", 
+                                  on_change=lambda i=i: st.session_state.resep_items[i].update({'aturan': st.session_state[f"aturan_{i}"]}))
+                
                 with cols[3]:
-                    if st.button("Hapus", key=f"del_resep_{i}", on_click=lambda i=i: remove_resep_item(i)):
-                        pass # Tidak memanggil rerun di sini
-                
-                # Update item['jumlah'] dan item['aturan'] dari session state
-                st.session_state.resep_items[i]['jumlah'] = st.session_state.get(f"jumlah_{i}", 0)
-                st.session_state.resep_items[i]['aturan'] = st.session_state.get(f"aturan_{i}", '')
-                
-                # Hitung Total
-                total_resep += st.session_state.resep_items[i]['jumlah'] * st.session_state.resep_items[i]['harga']
-            
-            st.markdown("---")
-            col_add, col_final = st.columns([1, 2])
-            with col_add:
-                if st.button("➕ Tambah Obat Lagi", on_click=add_resep_item):
-                    pass # Tidak memanggil rerun di sini
-            with col_final:
-                st.metric("Total Biaya Resep", f"Rp {total_resep:,.0f}")
-                
-            def handle_save_resep():
-                df_obat_master_latest = load_data("master_obat")
-                if save_resep_and_update_stock(st.session_state.pasien_resep, st.session_state.resep_items, df_obat_master_latest):
-                    clear_form_inputs(['pasien_resep', 'resep_items'])
-                    # st.experimental_rerun() TIDAK DIPANGGIL
+                    if i > 0:
+                        st.button("❌ Hapus", key=f"remove_resep_{i}", on_click=remove_resep_item, args=(i,))
 
-            if st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep", on_click=handle_save_resep):
-                pass
+            st.button("➕ Tambah Item Obat", key="add_resep_item", on_click=add_resep_item)
+            st.markdown("---")
+
+            # Kalkulasi Total
+            for item in st.session_state.resep_items:
+                jumlah = item.get('jumlah', 0)
+                harga = item.get('harga', 0.0)
+                total_resep += jumlah * harga
+                
+            st.info(f"💵 **TOTAL BIAYA RESEP:** Rp {total_resep:,.0f}")
+            
+            # --- SIMPAN RESEP ---
+            def handle_save_resep():
+                if save_resep_and_update_stock(st.session_state.pasien_resep, st.session_state.resep_items, df_obat_master):
+                    clear_form_inputs(['pasien_resep', 'resep_items'])
+            
+            st.button("Simpan Resep & Kurangi Stok", key="btn_save_resep", on_click=handle_save_resep)
 
         st.subheader("Data Resep Keluar Terbaru")
         if df_resep_keluar is not None and not df_resep_keluar.empty:
             st.dataframe(df_resep_keluar.head(10), use_container_width=True)
         else:
-            st.warning("Data Resep Keluar tidak dapat dimuat atau kosong.")
+            st.warning("Data Resep Keluar Dokter tidak dapat dimuat atau kosong.")
+
 
     # --- SUB-TAB 3: FAKTUR PEMBELIAN OBAT ---
     with sub_tab_faktur:
-        st.markdown("### Pencatatan Faktur Pembelian Obat (Penambahan Stok Otomatis)")
-
-        st.markdown("#### ➕ Input Faktur Pembelian Obat Baru")
-        with st.container(border=True):
-            col_faktur, col_supplier = st.columns(2)
-            with col_faktur:
-                no_faktur = st.text_input("Nomor Faktur", key="no_faktur")
-            with col_supplier:
-                nama_supplier = st.text_input("Nama Supplier", key="nama_supplier")
-                
-            tgl_beli = st.date_input("Tanggal Pembelian", key="tgl_beli")
-            total_faktur = st.number_input("Total Biaya Faktur (Rp)", min_value=0, step=1000, key="total_faktur")
-            detail_faktur = st.text_area("Detail Item yang Dibeli", help="Contoh: Amoxilin 5 Box, Exp 2026-10-01", key="detail_faktur")
-            
-            def handle_save_faktur():
-                # NOTE: Implementasi simpan faktur ke Google Sheet dan update stok masih placeholder/belum full diimplementasi.
-                st.success(f"Faktur No. {st.session_state.no_faktur} dari {st.session_state.nama_supplier} tersimpan (Simulasi penambahan stok berhasil).")
-                st.cache_data.clear() 
-                clear_form_inputs(['no_faktur', 'nama_supplier', 'tgl_beli', 'total_faktur', 'detail_faktur'])
-                # st.experimental_rerun() TIDAK DIPANGGIL
-                
-            if st.button("Simpan Faktur & Tambahkan Stok", key="btn_save_faktur", on_click=handle_save_faktur):
-                pass
+        st.markdown("### Pencatatan Faktur Pembelian Obat")
+        st.warning("Tab ini belum diimplementasikan sepenuhnya. Data faktur dimuat, tetapi form input/save belum tersedia.")
 
         st.subheader("Data Faktur Pembelian Obat Terbaru")
         if df_faktur_obat is not None and not df_faktur_obat.empty:
             st.dataframe(df_faktur_obat.head(10), use_container_width=True)
         else:
-            st.warning("Data Faktur Pembelian Obat tidak dapat dimuat atau kosong.")
+            st.warning("Data Faktur Obat Dokter tidak dapat dimuat atau kosong.")
 
 
 # ===============================================================
-# 3. TAB WARKOP PAK SORDEN
+# 3. TAB WARKOP ES PAK SORDEN
 # ===============================================================
 with tab_warkop:
     st.header(f"Dashboard {NAMA_BISNIS_WARKOP}")
     
-    sub_tab_dash, sub_tab_cost_estimator = st.tabs(["Transaksi Kasir (Utang/Piutang)", "Kalkulator Biaya Menu"])
+    sub_tab_kalkulator, sub_tab_transaksi = st.tabs(["Kalkulator HPP", "Transaksi Kasir & Utang/Piutang"])
     
-    with sub_tab_dash:
-        st.markdown("### Pencatatan Kasir & Transaksi")
+    with sub_tab_kalkulator:
+        st.markdown("### Kalkulator Harga Pokok Penjualan (HPP) Minuman/Menu")
+
+        st.markdown("#### 📝 Input Daftar Bahan Baku")
+        with st.container(border=True):
+            
+            # --- FUNGSI CALLBACK UNTUK UPDATE BIAYA BAHAN ---
+            def update_bahan_biaya(i):
+                try:
+                    harga_unit = st.session_state.get(f"harga_unit_{i}", 0.0)
+                    qty_pakai = st.session_state.get(f"qty_pakai_{i}", 0.0)
+                    
+                    biaya = harga_unit * qty_pakai
+                    
+                    st.session_state.bahan_items[i].update({
+                        'harga_unit': harga_unit,
+                        'qty_pakai': qty_pakai,
+                        'biaya': biaya
+                    })
+                except Exception:
+                    # Abaikan error jika input belum valid
+                    pass
+            
+            col_header = st.columns([3, 1.5, 1.5, 1, 1.5, 1])
+            with col_header[0]: st.markdown("**Nama Bahan**")
+            with col_header[1]: st.markdown("**Harga Unit (Rp)**")
+            with col_header[2]: st.markdown("**Qty Pakai (Unit)**")
+            with col_header[3]: st.markdown("**Satuan**")
+            with col_header[4]: st.markdown("**Biaya (Rp)**")
+            with col_header[5]: st.markdown("**Aksi**")
+            st.markdown("---") 
+
+            for i, item in enumerate(st.session_state.bahan_items):
+                cols = st.columns([3, 1.5, 1.5, 1, 1.5, 1])
+                
+                with cols[0]:
+                    st.text_input("Nama Bahan", value=item['nama'], key=f"nama_bahan_{i}", label_visibility="collapsed", 
+                                  on_change=lambda i=i: st.session_state.bahan_items[i].update({'nama': st.session_state[f"nama_bahan_{i}"]}))
+                
+                with cols[1]:
+                    st.number_input("Harga Unit", min_value=0.0, step=100.0, key=f"harga_unit_{i}", label_visibility="collapsed",
+                                    on_change=update_bahan_biaya, args=(i,))
+                    
+                with cols[2]:
+                    st.number_input("Qty Pakai", min_value=0.0, step=0.01, format="%.2f", key=f"qty_pakai_{i}", label_visibility="collapsed",
+                                    on_change=update_bahan_biaya, args=(i,))
+                    
+                with cols[3]:
+                    st.text_input("Satuan", value=item['satuan'], key=f"satuan_{i}", label_visibility="collapsed", 
+                                  on_change=lambda i=i: st.session_state.bahan_items[i].update({'satuan': st.session_state[f"satuan_{i}"]}))
+
+                with cols[4]:
+                    st.text(f"Rp {item['biaya']:,.0f}")
+                
+                with cols[5]:
+                    if i > 0:
+                        st.button("❌ Hapus", key=f"remove_bahan_{i}", on_click=remove_bahan_item, args=(i,))
+            
+            st.button("➕ Tambah Bahan", key="add_bahan_item", on_click=add_bahan_item)
+            st.markdown("---")
+            
+            # --- Biaya Tambahan ---
+            st.subheader("Biaya Tambahan (Non-Bahan)")
+            col_kemasan, col_ongkos, col_opr = st.columns(3)
+            
+            kemasan_cost = col_kemasan.number_input("Biaya Kemasan/cup", min_value=0, step=50, key="kemasan_cost", 
+                                                    on_change=lambda: st.session_state.update({'kemasan_cost': st.session_state.kemasan_cost}))
+            ongkos_cost = col_ongkos.number_input("Biaya Tenaga Kerja/Ongkos", min_value=0, step=100, key="ongkos_cost",
+                                                  on_change=lambda: st.session_state.update({'ongkos_cost': st.session_state.ongkos_cost}))
+            operasional_cost = col_opr.number_input("Biaya Operasional Lain/unit", min_value=0, step=100, key="operasional_cost",
+                                                  on_change=lambda: st.session_state.update({'operasional_cost': st.session_state.operasional_cost}))
+
+            # --- Hasil Kalkulasi ---
+            total_biaya_bahan = sum(item['biaya'] for item in st.session_state.bahan_items)
+            total_hpp = total_biaya_bahan + kemasan_cost + ongkos_cost + operasional_cost
+            
+            st.markdown("---")
+            
+            col_res_1, col_res_2 = st.columns(2)
+            col_res_1.metric("Total Biaya Bahan Baku", f"Rp {total_biaya_bahan:,.0f}")
+            col_res_2.metric("✨ HPP TOTAL PER UNIT", f"Rp {total_hpp:,.0f}")
+            
+            # Reset Button
+            st.button("🔄 Reset Kalkulator", key="btn_reset_warkop", on_click=clear_form_inputs, args=(['bahan_items', 'reset_warkop_cost'],))
+
+
+    with sub_tab_transaksi:
+        st.markdown("### Transaksi Kasir dan Laporan Utang/Piutang Warkop")
         
-        st.markdown("#### 💸 Input Transaksi Penjualan Warkop")
+        st.markdown("#### 💸 Input Transaksi Penjualan/Pembelian Warkop")
         with st.container(border=True):
             
             tr_date_warkop = st.date_input("Tanggal Transaksi", pd.to_datetime('today').date(), key="tr_date_warkop")
             
-            col_type, col_amount, col_party = st.columns(3)
-            with col_type:
-                tr_type_warkop = st.selectbox(
-                    "Jenis Transaksi", 
-                    ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", 
-                     "Pembelian Utang (Kita Berutang)", "Penerimaan Piutang", "Pembayaran Utang"],
-                    key="tr_type_warkop"
-                )
-            with col_amount:
-                tr_amount_warkop = st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_warkop")
-            with col_party:
-                tr_party_warkop = st.text_input("Pihak Terkait (Nama Pelanggan/Supplier)", key="tr_party_warkop")
+            tr_type_warkop = st.selectbox(
+                "Jenis Transaksi", 
+                ["Penjualan Tunai", "Piutang (Pelanggan Berutang)", 
+                 "Pembelian Utang (Kita Berutang)", "Penerimaan Piutang", "Pembayaran Utang", "Biaya Operasional"], 
+                key="tr_type_warkop"
+            )
             
+            tr_amount_warkop = st.number_input("Jumlah Transaksi (Rp)", min_value=0, step=1000, key="tr_amount_warkop")
+            tr_party_warkop = st.text_input("**Pihak Terkait** (Nama Pelanggan/Supplier/Keterangan Biaya)", key="tr_party_warkop")
             tr_catatan_warkop = st.text_area("Catatan Transaksi", max_chars=200, key="catatan_warkop")
             
             def handle_save_transaksi_warkop():
@@ -809,135 +905,22 @@ with tab_warkop:
                 }
                 if save_data("warkop_transaksi", data):
                     clear_form_inputs(['tr_date_warkop', 'tr_type_warkop', 'tr_amount_warkop', 'tr_party_warkop', 'catatan_warkop'])
-                    # st.experimental_rerun() TIDAK DIPANGGIL
-            
-            if st.button("Simpan Transaksi", key="btn_save_transaksi_warkop", on_click=handle_save_transaksi_warkop):
+                    
+            if st.button("Simpan Transaksi Warkop", key="btn_save_transaksi_warkop", on_click=handle_save_transaksi_warkop):
                 pass
-
-        st.markdown("---")
-        st.subheader("Data Transaksi Terbaru Warkop")
+                
+        st.subheader("Data Transaksi Terbaru Warkop Es Pak Sorden")
         if df_warkop_trx is not None and not df_warkop_trx.empty:
             st.dataframe(df_warkop_trx.head(10), use_container_width=True)
         else:
-            st.warning("Data Transaksi Warkop Pak Sorden tidak dapat dimuat atau kosong.")
-    
-    with sub_tab_cost_estimator:
-        st.markdown("### Kalkulator Biaya Menu (Cost Estimator)")
-        st.info("Hitung Harga Pokok Penjualan (HPP) per porsi menu Anda.")
-        
-        menu_name = st.text_input("Nama Menu yang Dihitung", placeholder="Contoh: Es Kopi Susu Pak Sorden", key="menu_name_warkop")
-        
-        # --- INPUT BAHAN BAKU DINAMIS ---
-        st.subheader("1. Biaya Bahan Baku per Porsi")
-        total_hpp_bahan = 0
-        
-        col_header = st.columns([3, 1, 1.5, 1, 1])
-        with col_header[0]: st.markdown("**Nama Bahan**")
-        with col_header[1]: st.markdown("**Harga Unit (Rp)**")
-        with col_header[2]: st.markdown("**Kuantitas Dipakai**")
-        with col_header[3]: st.markdown("**Satuan**")
-        with col_header[4]: st.markdown("**Total Biaya**")
-        st.markdown("---") 
-
-        for i, item in enumerate(st.session_state.bahan_items):
-            cols = st.columns([3, 1, 1.5, 1, 1])
-            
-            with cols[0]:
-                st.text_input("Nama Bahan", value=item['nama'], label_visibility="collapsed", key=f"bahan_nama_{i}", placeholder="Contoh: Kopi Bubuk")
-            with cols[1]:
-                harga_unit = st.number_input("Harga Unit (Rp)", min_value=0.0, step=100.0, value=item['harga_unit'], label_visibility="collapsed", key=f"bahan_harga_{i}")
-            with cols[2]:
-                qty_pakai = st.number_input("Qty Dipakai", min_value=0.0, step=0.01, value=item['qty_pakai'], label_visibility="collapsed", key=f"bahan_qty_{i}")
-            with cols[3]:
-                 st.text_input("Satuan", value=item['satuan'], label_visibility="collapsed", key=f"bahan_satuan_{i}", placeholder="gr/ml/unit")
-            
-            # Perhitungan Biaya Bahan per baris
-            biaya_item = round(harga_unit * qty_pakai)
-            with cols[4]:
-                st.metric("Biaya", f"Rp {biaya_item:,.0f}", label_visibility="collapsed")
-            
-            # Update session state
-            st.session_state.bahan_items[i]['nama'] = st.session_state.get(f"bahan_nama_{i}")
-            st.session_state.bahan_items[i]['harga_unit'] = st.session_state.get(f"bahan_harga_{i}")
-            st.session_state.bahan_items[i]['qty_pakai'] = st.session_state.get(f"bahan_qty_{i}")
-            st.session_state.bahan_items[i]['satuan'] = st.session_state.get(f"bahan_satuan_{i}")
-            st.session_state.bahan_items[i]['biaya'] = biaya_item
-            
-            total_hpp_bahan += biaya_item
-        
-        col_add, col_del, col_total_bahan = st.columns([1, 1, 2])
-        with col_add:
-            if st.button("➕ Tambah Bahan", on_click=add_bahan_item):
-                 pass # Tidak memanggil rerun di sini
-        with col_del:
-            if st.button("Hapus Bahan Terakhir", on_click=lambda: remove_bahan_item(len(st.session_state.bahan_items) - 1)):
-                 pass # Tidak memanggil rerun di sini
-        
-        with col_total_bahan:
-            st.metric("Total Biaya Bahan Baku", f"Rp {total_hpp_bahan:,.0f}")
-            
-        st.markdown("---")
-        
-        # --- INPUT BIAYA TAMBAHAN PER PORSI ---
-        st.subheader("2. Biaya Tambahan per Porsi")
-        
-        col_kemasan, col_ongkos, col_operasional = st.columns(3)
-        with col_kemasan:
-            kemasan_cost = st.number_input("Biaya Kemasan (cup, sedotan, dll)", min_value=0, step=100, key="kemasan_cost")
-        with col_ongkos:
-            ongkos_cost = st.number_input("Biaya Tenaga Kerja/Gaji (perkiraan per porsi)", min_value=0, step=100, key="ongkos_cost")
-        with col_operasional:
-            operasional_cost = st.number_input("Biaya Operasional (listrik, air, sewa - perkiraan per porsi)", min_value=0, step=100, key="operasional_cost")
-
-        # --- REKAPITULASI DAN HASIL AKHIR ---
-        st.markdown("---")
-        st.subheader("3. Rekapitulasi Harga Pokok Penjualan (HPP)")
-        
-        hpp_total = total_hpp_bahan + kemasan_cost + ongkos_cost + operasional_cost
-        
-        col_hpp, col_saran = st.columns(2)
-        with col_hpp:
-            st.metric(
-                "TOTAL HPP per Porsi", 
-                f"Rp {hpp_total:,.0f}",
-                help=f"HPP = Bahan ({total_hpp_bahan:,}) + Kemasan ({kemasan_cost:,}) + Ongkos ({ongkos_cost:,}) + Operasional ({operasional_cost:,})"
-            )
-        
-        with col_saran:
-            # Menggunakan Markup 50% sebagai saran awal
-            saran_harga_jual = round(hpp_total * 1.5, -2) # Pembulatan ke 100 terdekat
-            st.metric("SARAN HARGA JUAL (Markup 50%)", f"Rp {saran_harga_jual:,.0f}", delta="Coba Jual Lebih Tinggi!")
-            
-        def handle_reset_kalkulator():
-            clear_form_inputs(['menu_name_warkop', 'bahan_items', 'reset_warkop_cost'])
-            # st.experimental_rerun() TIDAK DIPANGGIL
-
-        if st.button("Reset Kalkulator", key="btn_reset_kalkulator", on_click=handle_reset_kalkulator):
-            pass
+            st.warning("Data Transaksi Warkop Es Pak Sorden tidak dapat dimuat atau kosong.")
 
 
 # ===============================================================
-# 4. TAB LAPORAN KEUANGAN & STOK TOTAL
+# 4. TAB LAPORAN KEUANGAN
 # ===============================================================
 with tab_laporan:
-    st.header("Laporan Keuangan & Stok Total")
+    st.header("Laporan Keuangan Gabungan (Cash Basis)")
+    st.markdown("Ringkasan ini berdasarkan total nilai transaksi (kas masuk dan keluar) yang telah dicatat.")
     
-    st.info("Laporan ini menggunakan metode **Arus Kas (Cash Basis)**.")
-    
-    # --- Filter Tanggal ---
-    today = pd.to_datetime('today').date()
-    col_start, col_end = st.columns(2)
-    with col_start:
-        start_date = st.date_input("Tanggal Mulai", today - timedelta(days=30))
-    with col_end:
-        end_date = st.date_input("Tanggal Akhir", today)
-        
-    st.markdown("---")
-    
-    # Panggil fungsi laporan keuangan
     generate_financial_report(df_beras_trx, df_warkop_trx, df_resep_keluar, df_faktur_obat)
-
-# HAPUS BAGIAN INI (tempat error terakhir)
-# if st.session_state.rerun_needed:
-#     st.session_state.rerun_needed = False # Reset flag
-#     st.experimental_rerun()
